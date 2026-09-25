@@ -36,7 +36,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
     (void)HAL_UARTEx_ReceiveToIdle_IT(&huart1, s_rx_buf, sizeof(s_rx_buf));
 }
 
-/* 串口出错回调（校验错 PE / 帧错 FE / 溢出 ORE） */
+/* 串口出错回调（校验错 PE / 帧错 FE / 溢出 ORE）- */
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
     if (huart != &huart1) { return; }
