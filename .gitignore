@@ -1,0 +1,19 @@
+# Keil MDK 编译产物（每次编译都会重建，不必存档）
+MDK-ARM/NEW-INFANTRY-A/
+*.o
+*.d
+*.crf
+*.axf
+*.lnp
+*.htm
+*.lst
+*.map
+*.dep
+*.iex
+*.bin
+*.hex
+*.i
+*.bak
+*.uvguix.*
+.vscode/*.log
+*.ioc.bak
