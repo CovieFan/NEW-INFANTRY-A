@@ -29,6 +29,7 @@
 #include "bsp_uart.h"
 #include "bsp_buzzer.h"
 #include "motor.h"
+#include "remote.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -102,6 +103,7 @@ int main(void)
   bsp_buzzer_init();
   bsp_buzzer_beep(200);          /* 上电"滴"一声 = 烧录成功 */
   bsp_can_init();
+  remote_init();
   BspPrintf("CAN1 init\r\n");
   /* USER CODE END 2 */
 
@@ -122,29 +124,13 @@ int main(void)
                   (unsigned long)g_can_rx_cnt,
                   (unsigned long)g_can_id_cnt[0], (unsigned long)g_can_id_cnt[1],
                   (unsigned long)g_can_id_cnt[2], (unsigned long)g_can_id_cnt[3]);
+        BspPrintf("RC frames=%lu bytes=%u errcnt=%lu errcode=0x%08lX\r\n",
+                  (unsigned long)g_rc_frames, (unsigned)g_rc_bytes,
+                  (unsigned long)g_rc_err_cnt, (unsigned long)g_rc_err_code);
+        BspPrintf("RC ch=%d,%d,%d,%d sw=%d,%d\r\n",
+                  (int)remote.ch0, (int)remote.ch1, (int)remote.ch2, (int)remote.ch3,
+                  (int)remote.sw1, (int)remote.sw2);
     }
-}
-
-
-
-static uint32_t t_ctrl  = 0U;
-static uint32_t t_print = 0U;
-uint32_t now = HAL_GetTick();
-
-/* ---- 1ms 节拍：持续发电流帧（C620 必须持续收到才出力，停发就收力）---- */
-if ((now - t_ctrl) >= 1U)
-{
-    int16_t cur[4] = {0, 0, 0, 0};
-    t_ctrl = now;
-
-    if (now >= 3000U)                 /* 上电 3 秒后再动，给人反应时间 */
-    {
-        if ((now % 3000U) < 500U)     /* 每 3 秒里，有 500ms 给电流 */
-        {
-            cur[0] = 1000;            /* 只测 1 号轮；±16384 的约 6%，很保守 */
-        }
-    }
-    motor_send_current(cur);
 }
   }
   /* USER CODE END 3 */

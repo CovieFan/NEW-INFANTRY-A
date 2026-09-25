@@ -314,7 +314,7 @@
           </ArmAdsMisc>
           <Cads>
             <interw>1</interw>
-            <Optim>1</Optim>
+            <Optim>2</Optim>
             <oTime>0</oTime>
             <SplitLS>0</SplitLS>
             <OneElfS>1</OneElfS>
@@ -573,6 +573,16 @@
               <FileName>motor.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\USER\device\motor.h</FilePath>
+            </File>
+            <File>
+              <FileName>remote.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\USER\device\remote.c</FilePath>
+            </File>
+            <File>
+              <FileName>remote.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\USER\device\remote.h</FilePath>
             </File>
           </Files>
         </Group>
