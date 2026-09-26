@@ -36,7 +36,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
     (void)HAL_UARTEx_ReceiveToIdle_IT(&huart1, s_rx_buf, sizeof(s_rx_buf));
 }
 
-/* 串口出错回调（校验错 PE / 帧错 FE / 溢出 ORE）- */
+/* 串口出错回调（校验错 PE / 帧错 FE / 溢出 ORE）—— 帧格式对不对，一眼看出 */
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
     if (huart != &huart1) { return; }
@@ -63,8 +63,8 @@ static void remote_unpack(const uint8_t *buff)
     remote.ch2 = (int16_t)((((buff[2] >> 6) | (buff[3] << 2) | (buff[4] << 10)) & 0x07FFU) - 1024);
     remote.ch3 = (int16_t)((((buff[4] >> 1) | (buff[5] << 7))                   & 0x07FFU) - 1024);
 
-    remote.sw1 = (uint8_t)(((buff[5] >> 4) & 0x000CU) >> 2);
-    remote.sw2 = (uint8_t)((buff[5] >> 4) & 0x0003U);
+    remote.sw1 = (uint8_t)(((buff[5] >> 4) & 0x03U));
+    remote.sw2 = (uint8_t)((buff[5] >> 6) & 0x03U);
 
     remote.last_ms = HAL_GetTick();
 }

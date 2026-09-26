@@ -30,6 +30,7 @@
 #include "bsp_buzzer.h"
 #include "motor.h"
 #include "remote.h"
+#include "chassis.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -115,18 +116,20 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+      chassis_run(); 
     {
     static uint32_t t = 0U;                      /* static：值在循环间保留 */
-    if ((HAL_GetTick() - t) >= 100U)             /* 非阻塞计时：每 100ms 一次 */
+    if ((HAL_GetTick() - t) >= 500U)             /* 非阻塞计时：每 100ms 一次 */
     {
         t = HAL_GetTick();
-        BspPrintf("CAN1 cnt=%lu | 0x201:%lu 0x202:%lu 0x203:%lu 0x204:%lu\r\n",
-                  (unsigned long)g_can_rx_cnt,
-                  (unsigned long)g_can_id_cnt[0], (unsigned long)g_can_id_cnt[1],
-                  (unsigned long)g_can_id_cnt[2], (unsigned long)g_can_id_cnt[3]);
-        BspPrintf("RC frames=%lu bytes=%u errcnt=%lu errcode=0x%08lX\r\n",
-                  (unsigned long)g_rc_frames, (unsigned)g_rc_bytes,
-                  (unsigned long)g_rc_err_cnt, (unsigned long)g_rc_err_code);
+        #if (CHASSIS_OL_TEST != 0U)
+        BspPrintf("OL slot=%u cur=%d,%d,%d,%d\r\n",
+                  (unsigned)g_chassis_ol_slot,
+                  (int)g_chassis_ol_cur[0], (int)g_chassis_ol_cur[1],
+                  (int)g_chassis_ol_cur[2], (int)g_chassis_ol_cur[3]);
+        #endif
+
+
         BspPrintf("RC ch=%d,%d,%d,%d sw=%d,%d\r\n",
                   (int)remote.ch0, (int)remote.ch1, (int)remote.ch2, (int)remote.ch3,
                   (int)remote.sw1, (int)remote.sw2);
