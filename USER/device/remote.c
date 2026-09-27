@@ -50,7 +50,18 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 
 void remote_update(void)
 {
-    /* 步3b 再写 */
+       uint32_t now = HAL_GetTick();
+
+    /* 必须判 last_ms != 0：刚上电还没收到过任何帧时，不能算"在线" */
+    /* 用减法比大小，而不是 now > last_ms + 150 —— 32 位 tick 约 49 天回绕，减法天然不怕 */
+    if ((remote.last_ms != 0U) && ((now - remote.last_ms) <= 150U))
+    {
+        remote.online = 1U;
+    }
+    else
+    {
+        remote.online = 0U;
+    }
 }
 
 volatile remote_t remote = {0};

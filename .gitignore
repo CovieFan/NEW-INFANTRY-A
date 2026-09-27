@@ -15,5 +15,8 @@ MDK-ARM/NEW-INFANTRY-A/
 *.i
 *.bak
 *.uvguix.*
-.vscode/*.log
 *.ioc.bak
+
+# 编辑器 / 编译日志（每次编译都变，不进版本库）
+*.log
+*.log.lock

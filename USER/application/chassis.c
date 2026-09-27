@@ -6,90 +6,132 @@
 #include "chassis.h"
 #include "motor.h"
 #include "main.h"                       /* HAL_GetTick() */
+#include "remote.h"
 
-#if (CHASSIS_OL_TEST != 0U)
+/* ================= 4d 遥控开环控制 ================= */
+#if (CHASSIS_RC_ENABLE != 0U)
 
-/* ---------------- 标定参数 ---------------- */
-#define OL_CUR        1000              /* 标定电流，满量程 ±16384（≈1.2A / 20A） */
-#define OL_DELAY      3000U             /* 上电后等 3s 才动，给人时间松手 */
-#define OL_ON         500U              /* 每个动作持续 500ms */
-#define OL_GAP        1000U             /* 动作之间停 1000ms（这段时间发全 0） */
-#define OL_SLOT       (OL_ON + OL_GAP)  /* 一格 = 1500ms */
-#define OL_SLOT_END   5U                /* 一共 5 格：0~3 单轮，4 = 四个一起 */
-#define OL_SEND_MS    1U                /* 发帧节拍 1ms ≈ 1kHz（电调硬要求） */
+/* ★ 4a 实测结果：下标 0~3 = 0x201 FR / 0x202 FL / 0x203 RL / 0x204 RR */
+/*   +1 = 该轮给正电流时是"往前转"（左右镜像安装） */
+const int8_t g_motor_dir[4] = { +1, -1, -1, +1 };
 
-/* ★ 4a 实测标定结果：下标 0~3 = 0x201 FR / 0x202 FL / 0x203 RL / 0x204 RR */
-/*   +1 = 该轮给正电流时是"往前转"；-1 = 相反 */
-static const int8_t motor_dir[4] = { +1, -1, -1, +1 };
+/* 给 Watch / 串口看的调试量 */
+volatile float   g_dbg_vx  = 0.0f;
+volatile float   g_dbg_vy  = 0.0f;
+volatile float   g_dbg_wz  = 0.0f;
+volatile int16_t g_dbg_cur[4] = { 0, 0, 0, 0 };
 
-/* 每种整车动作在各轮上的"前进方向意图"(wf) */
-/*             0x201FR 0x202FL 0x203RL 0x204RR */
-static const int8_t act_wf[5][4] = {
-    {    0,    0,    0,    0 },     /* 0 · 停              */
-    {   +1,   +1,   +1,   +1 },     /* 1 · 前进            */
-    {   -1,   -1,   -1,   -1 },     /* 2 · 后退            */
-    {   +1,   -1,   -1,   +1 },     /* 3 · 左转(俯视逆时针) */
-    {   -1,   +1,   +1,   -1 }      /* 4 · 右转(俯视顺时针) */
-};
+/* ================= 摇杆行程（实测标定）=================
+   rc_full_pos[i] = 通道 i「读数为正」方向推到底的幅度
+   rc_full_neg[i] = 通道 i「读数为负」方向推到底的幅度
+   正常轴两个方向都是 660（DJI：1684-1024）。
+   ⚠️ ch2 的某一侧实测只有 ~150 —— 在这里单独补偿（是"补偿"，不是"修复"）。 */
+static const float rc_full_pos[4] = { 660.0f, 660.0f, 150.0f, 660.0f };  /* ch0~ch3 */
+static const float rc_full_neg[4] = { 660.0f, 660.0f, 660.0f, 660.0f };
 
-volatile uint8_t g_chassis_ol_slot = 0xFFU;
-volatile int16_t g_chassis_ol_cur[4] = { 0, 0, 0, 0 };
-
-static void chassis_ol_test_run(void)
+/* 取某个通道并归一化到 ±1（idx > 3 视为"该轴不用"，返回 0） */
+static float rc_axis(uint8_t idx)
 {
-    static uint32_t t0      = 0U;       /* 记录开始时刻 */
-    static uint32_t tx_last = 0U;       /* 记录上次发 CAN 的时刻 */
-    int16_t  cur[4] = { 0, 0, 0, 0 };
-    uint32_t now = HAL_GetTick();
-    uint32_t el;
-    uint32_t slot;
-    uint32_t ph;
-    uint8_t  i;
+    int16_t ch;
+    float   v;
+    float   a;
+    float   fs;
 
-    if (t0 == 0U) { t0 = now; }
-    el = now - t0;                      /* 距开机的毫秒数 */
-
-    if (el >= OL_DELAY)                 /* 前 3 秒什么都不做（照样发全 0） */
+    switch (idx)                                   /* 直接取通道值（原 rc_ch() 已并入这里） */
     {
-        el  -= OL_DELAY;
-        slot = (el / OL_SLOT) % OL_SLOT_END;
-        ph   =  el % OL_SLOT;
-        g_chassis_ol_slot = (uint8_t)slot;
-
-        if (ph < OL_ON)
-        {
-            /* 意图(wf) × 方向修正(motor_dir) × 电流大小 = 实际发给电调的值 */
-            for (i = 0U; i < 4U; i++)
-            {
-                cur[i] = (int16_t)(act_wf[slot][i] * motor_dir[i] * OL_CUR);
-            }
-        }
-    }
-    else
-    {
-        g_chassis_ol_slot = 0xFFU;
+        case 0U: ch = remote.ch0; break;
+        case 1U: ch = remote.ch1; break;
+        case 2U: ch = remote.ch2; break;
+        case 3U: ch = remote.ch3; break;
+        default: return 0.0f;                      /* RC_CH_xxx = 0xFF -> 该轴恒 0 */
     }
 
-    /* ★ 按 1ms 节拍持续发；全 0 也要发 —— "不发"不等于"停" */
-    if ((now - tx_last) >= OL_SEND_MS)
-    {
-        tx_last = now;
-        motor_send_current(cur);
-        g_chassis_ol_cur[0] = cur[0];
-        g_chassis_ol_cur[1] = cur[1];
-        g_chassis_ol_cur[2] = cur[2];
-        g_chassis_ol_cur[3] = cur[3];
-    }
+    v = (float)ch;
+    a = (v < 0.0f) ? -v : v;
+
+    if (a < (float)RC_DEADBAND) { return 0.0f; }   /* 死区内 -> 0 */
+
+    fs = (v >= 0.0f) ? rc_full_pos[idx] : rc_full_neg[idx];
+    if (fs <= (float)RC_DEADBAND) { return 0.0f; } /* 防除零 */
+    if (a > fs) { a = fs; }                        /* 超量程 -> 削平 */
+
+    /* 死区外重映射：从死区边缘连续地长到 1（顺便修掉"刚出死区就跳"的问题） */
+    a = (a - (float)RC_DEADBAND) / (fs - (float)RC_DEADBAND);
+    return (ch < 0) ? -a : a;
 }
-#endif /* CHASSIS_OL_TEST */
+
+
+
+static void chassis_rc_run(void)
+{
+    static const int16_t zero[4] = { 0, 0, 0, 0 };
+    float   vx;
+    float   vy;
+    float   wz;
+    float   wf[4];
+    int16_t cur[4] = { 0, 0, 0, 0 };
+    uint8_t i;
+
+    /* ① ★最重要的一行：遥控掉线 -> 立刻全 0 电流 */
+    if (remote.online == 0U)
+    {
+        g_dbg_vx = 0.0f; g_dbg_vy = 0.0f; g_dbg_wz = 0.0f;
+        for (i = 0U; i < 4U; i++) { g_dbg_cur[i] = 0; }
+        motor_send_current(zero);
+        return;
+    }
+
+    /* ② 摇杆 -> 三个"意图电流" */
+    vx = rc_axis(RC_CH_VX) * (float)RC_SIGN_VX * (float)CHASSIS_FWD_CUR;
+    vy = rc_axis(RC_CH_VY) * (float)RC_SIGN_VY * (float)CHASSIS_STRAFE_CUR;
+    wz = rc_axis(RC_CH_WZ) * (float)RC_SIGN_WZ * (float)CHASSIS_SPIN_CUR;
+
+    g_dbg_vx = vx; g_dbg_vy = vy; g_dbg_wz = wz;
+
+    /* ③ 逆运动学（麦轮标准式，下标 0~3 = FR, FL, RL, RR）
+          自转部分的符号已被 4a-2 实测确认过：左转 = 右侧+、左侧-  */
+    wf[0] = vx + vy + wz;    /* FR */
+    wf[1] = vx - vy - wz;    /* FL */
+    wf[2] = vx + vy - wz;    /* RL */
+    wf[3] = vx - vy + wz;    /* RR */
+
+    /* ④ 硬限幅 + 方向修正 + 单轮掉线保护 */
+    for (i = 0U; i < 4U; i++)
+    {
+        float c = wf[i];
+
+        if (c >  (float)CHASSIS_CUR_MAX) { c =  (float)CHASSIS_CUR_MAX; }
+        if (c < -(float)CHASSIS_CUR_MAX) { c = -(float)CHASSIS_CUR_MAX; }
+
+        /* 该轮电调从没上线过 -> 不给电流（保护一个轮子死了还猛给的情况） */
+        if (motor_fb[i].online == 0U) { c = 0.0f; }
+        if ((motor_fb[i].last_ms == 0U) ||((HAL_GetTick() - motor_fb[i].last_ms) > 100U))
+        {
+            c = 0.0f;
+        }
+
+        cur[i] = (int16_t)(c * (float)g_motor_dir[i]);
+        g_dbg_cur[i] = cur[i];
+    }
+
+    /* ⑤ 发出去。TIM6 已经给了 1kHz 节拍，这里不用再自己限速 */
+    motor_send_current(cur);
+}
+
+#endif /* CHASSIS_RC_ENABLE */
+
+
 
 /* ---------------- 对外唯一入口 ---------------- */
 void chassis_run(void)
 {
-#if (CHASSIS_OL_TEST != 0U)
-    chassis_ol_test_run();
-    return;                             /* 标定期间不跑正式底盘逻辑 */
+    remote_update();                 /* 1kHz 里顺手判遥控在线 */
+
+#if (CHASSIS_RC_ENABLE != 0U)
+    chassis_rc_run();
+    return;
 #endif
+    /* 两个开关都关着 -> 什么都不做（安全默认） */
 
     /* 以后写这里：逆运动学 + PID + 保护条件 */
 }

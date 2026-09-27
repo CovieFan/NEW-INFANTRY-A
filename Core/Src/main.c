@@ -70,6 +70,7 @@ void SystemClock_Config(void);
   * @retval int
   */
 int main(void)
+
 {
 
   /* USER CODE BEGIN 1 */
@@ -104,7 +105,9 @@ int main(void)
   bsp_buzzer_init();
   bsp_buzzer_beep(200);          /* 上电"滴"一声 = 烧录成功 */
   bsp_can_init();
+  motor_init();                  /* ← 新增：注册电机反馈回调 */
   remote_init();
+  HAL_TIM_Base_Start_IT(&htim6);   /* ← 新增：启动 1kHz 控制节拍 */
   BspPrintf("CAN1 init\r\n");
   /* USER CODE END 2 */
 
@@ -116,26 +119,8 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-      chassis_run(); 
-    {
-    static uint32_t t = 0U;                      /* static：值在循环间保留 */
-    if ((HAL_GetTick() - t) >= 500U)             /* 非阻塞计时：每 100ms 一次 */
-    {
-        t = HAL_GetTick();
-        #if (CHASSIS_OL_TEST != 0U)
-        BspPrintf("OL slot=%u cur=%d,%d,%d,%d\r\n",
-                  (unsigned)g_chassis_ol_slot,
-                  (int)g_chassis_ol_cur[0], (int)g_chassis_ol_cur[1],
-                  (int)g_chassis_ol_cur[2], (int)g_chassis_ol_cur[3]);
-        #endif
 
-
-        BspPrintf("RC ch=%d,%d,%d,%d sw=%d,%d\r\n",
-                  (int)remote.ch0, (int)remote.ch1, (int)remote.ch2, (int)remote.ch3,
-                  (int)remote.sw1, (int)remote.sw2);
-    }
-}
-  }
+ }
   /* USER CODE END 3 */
 }
 
@@ -185,7 +170,11 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance != TIM6) { return; }   /* TIM12 是蜂鸣器 PWM，不管 */
+    chassis_run();                            /* ← 1kHz 控制节拍跑在这里 */
+}
 /* USER CODE END 4 */
 
 /**
