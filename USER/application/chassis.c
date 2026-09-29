@@ -1,25 +1,29 @@
 /* ============================================================
  * chassis.c —— 底盘应用层
  * 职责：把"车该往哪走"变成 4 个轮子的电流。
- * 现状：4a 逐轮开环标定；以后放逆运动学 + 状态机 + 保护。
+ * 现状：4d 遥控开环 + 4c-1 单轮闭环测试
  * ============================================================ */
 #include "chassis.h"
 #include "motor.h"
 #include "main.h"                       /* HAL_GetTick() */
 #include "remote.h"
-
-/* ================= 4d 遥控开环控制 ================= */
-#if (CHASSIS_RC_ENABLE != 0U)
+#include "pid.h"
 
 /* ★ 4a 实测结果：下标 0~3 = 0x201 FR / 0x202 FL / 0x203 RL / 0x204 RR */
 /*   +1 = 该轮给正电流时是"往前转"（左右镜像安装） */
 const int8_t g_motor_dir[4] = { +1, -1, -1, +1 };
 
+volatile int16_t g_dbg_cur[4] = { 0, 0, 0, 0 };
+
+/* ================= 4d 遥控开环控制 ================= */
+#if (CHASSIS_RC_ENABLE != 0U)
+
+
 /* 给 Watch / 串口看的调试量 */
 volatile float   g_dbg_vx  = 0.0f;
 volatile float   g_dbg_vy  = 0.0f;
 volatile float   g_dbg_wz  = 0.0f;
-volatile int16_t g_dbg_cur[4] = { 0, 0, 0, 0 };
+
 
 /* ================= 摇杆行程（实测标定）=================
    rc_full_pos[i] = 通道 i「读数为正」方向推到底的幅度
@@ -117,9 +121,68 @@ static void chassis_rc_run(void)
     /* ⑤ 发出去。TIM6 已经给了 1kHz 节拍，这里不用再自己限速 */
     motor_send_current(cur);
 }
-
 #endif /* CHASSIS_RC_ENABLE */
 
+
+
+
+/* ================= 4c-1 单轮闭环测试 ================= */
+#if (CHASSIS_PID_TEST != 0U)
+
+volatile float   g_pid_tar[4] = { 0, 0, 0, 0 };   /* Watch：目标（前进为正）*/
+volatile float   g_pid_fb [4] = { 0, 0, 0, 0 };   /* Watch：反馈（前进为正）*/
+volatile uint8_t g_pid_ok     = 0U;               /* 是否已初始化 */
+
+static pid_t s_pid[4];
+
+static void chassis_pid_test_run(void)
+{
+    float   target[4];
+    int16_t cur[4];
+    uint8_t i;
+
+    if (g_pid_ok == 0U)                            /* 只初始化一次 */
+    {
+        for (i = 0U; i < 4U; i++)
+        {
+            pid_init(&s_pid[i], CHASSIS_PID_KP, CHASSIS_PID_KI, CHASSIS_PID_KD,
+                     CHASSIS_PID_OUT_LIM, CHASSIS_PID_INT_LIM);
+        }
+        g_pid_ok = 1U;
+    }
+
+    /* 4c-1：只让 0 号轮（FR）转，其余目标 0 */
+    target[0] = CHASSIS_TEST_RPM;
+    target[1] = 0.0f;
+    target[2] = 0.0f;
+    target[3] = 0.0f;
+
+    for (i = 0U; i < 4U; i++)
+    {
+        float fb = (float)motor_fb[i].speed_rpm * (float)g_motor_dir[i];  /* 前进为正 */
+
+        g_pid_tar[i] = target[i];
+        g_pid_fb[i]  = fb;
+
+        /* 电调掉线 -> 清 PID 状态 + 不给电流 */
+        if ((motor_fb[i].last_ms == 0U) ||
+            ((HAL_GetTick() - motor_fb[i].last_ms) > 100U))
+        {
+            pid_reset(&s_pid[i]);
+            cur[i]       = 0;
+            g_dbg_cur[i] = 0;
+            continue;
+        }
+
+        /* PID 输出是"前进方向的电流"，乘回 motor_dir 才是实际电流 */
+        cur[i] = (int16_t)(pid_calc(&s_pid[i], target[i], fb) * (float)g_motor_dir[i]);
+        g_dbg_cur[i] = cur[i];
+    }
+
+    motor_send_current(cur);
+}
+
+#endif /* CHASSIS_PID_TEST */
 
 
 /* ---------------- 对外唯一入口 ---------------- */
@@ -127,11 +190,16 @@ void chassis_run(void)
 {
     remote_update();                 /* 1kHz 里顺手判遥控在线 */
 
+#if (CHASSIS_PID_TEST != 0U)
+    chassis_pid_test_run();          /* 4c-1：单轮闭环（优先于遥控） */
+    return;
+#endif
+
 #if (CHASSIS_RC_ENABLE != 0U)
     chassis_rc_run();
     return;
 #endif
     /* 两个开关都关着 -> 什么都不做（安全默认） */
-
-    /* 以后写这里：逆运动学 + PID + 保护条件 */
 }
+
+
