@@ -422,7 +422,8 @@
                 "__clang_version__=\"9.0.0 \"",
                 "__llvm__=1"
             ],
-            "intelliSenseMode": "${default}"
+            "compilerPath": "",
+            "intelliSenseMode": "windows-clang-arm"
         }
     ],
     "version": 4

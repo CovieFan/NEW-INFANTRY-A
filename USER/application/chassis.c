@@ -8,6 +8,8 @@
 #include "main.h"                       /* HAL_GetTick() */
 #include "remote.h"
 #include "pid.h"
+#include "input.h"
+
 
 /* ★ 4a 实测结果：下标 0~3 = 0x201 FR / 0x202 FL / 0x203 RL / 0x204 RR */
 /*   +1 = 该轮给正电流时是"往前转"（左右镜像安装） */
@@ -23,48 +25,6 @@ volatile int16_t g_dbg_cur[4] = { 0, 0, 0, 0 };
 volatile float   g_dbg_vx  = 0.0f;
 volatile float   g_dbg_vy  = 0.0f;
 volatile float   g_dbg_wz  = 0.0f;
-
-
-/* ================= 摇杆行程（实测标定）=================
-   rc_full_pos[i] = 通道 i「读数为正」方向推到底的幅度
-   rc_full_neg[i] = 通道 i「读数为负」方向推到底的幅度
-   正常轴两个方向都是 660（DJI：1684-1024）。
-   ⚠️ ch2 的某一侧实测只有 ~150 —— 在这里单独补偿（是"补偿"，不是"修复"）。 */
-static const float rc_full_pos[4] = { 660.0f, 660.0f, 150.0f, 660.0f };  /* ch0~ch3 */
-static const float rc_full_neg[4] = { 660.0f, 660.0f, 660.0f, 660.0f };
-
-/* 取某个通道并归一化到 ±1（idx > 3 视为"该轴不用"，返回 0） */
-static float rc_axis(uint8_t idx)
-{
-    int16_t ch;
-    float   v;
-    float   a;
-    float   fs;
-
-    switch (idx)                                   /* 直接取通道值（原 rc_ch() 已并入这里） */
-    {
-        case 0U: ch = remote.ch0; break;
-        case 1U: ch = remote.ch1; break;
-        case 2U: ch = remote.ch2; break;
-        case 3U: ch = remote.ch3; break;
-        default: return 0.0f;                      /* RC_CH_xxx = 0xFF -> 该轴恒 0 */
-    }
-
-    v = (float)ch;
-    a = (v < 0.0f) ? -v : v;
-
-    if (a < (float)RC_DEADBAND) { return 0.0f; }   /* 死区内 -> 0 */
-
-    fs = (v >= 0.0f) ? rc_full_pos[idx] : rc_full_neg[idx];
-    if (fs <= (float)RC_DEADBAND) { return 0.0f; } /* 防除零 */
-    if (a > fs) { a = fs; }                        /* 超量程 -> 削平 */
-
-    /* 死区外重映射：从死区边缘连续地长到 1（顺便修掉"刚出死区就跳"的问题） */
-    a = (a - (float)RC_DEADBAND) / (fs - (float)RC_DEADBAND);
-    return (ch < 0) ? -a : a;
-}
-
-
 
 static void chassis_rc_run(void)
 {
@@ -86,9 +46,9 @@ static void chassis_rc_run(void)
     }
 
     /* ② 摇杆 -> 三个"意图电流" */
-    vx = rc_axis(RC_CH_VX) * (float)RC_SIGN_VX * (float)CHASSIS_FWD_CUR;
-    vy = rc_axis(RC_CH_VY) * (float)RC_SIGN_VY * (float)CHASSIS_STRAFE_CUR;
-    wz = rc_axis(RC_CH_WZ) * (float)RC_SIGN_WZ * (float)CHASSIS_SPIN_CUR;
+    vx = input_axis(INPUT_AXIS_CHASSIS_X) * (float)CHASSIS_FWD_CUR;
+    vy = input_axis(INPUT_AXIS_CHASSIS_Y) * (float)CHASSIS_STRAFE_CUR;
+    wz = input_axis(INPUT_AXIS_CHASSIS_WZ) * (float)CHASSIS_SPIN_CUR;
 
     g_dbg_vx = vx; g_dbg_vy = vy; g_dbg_wz = wz;
 
@@ -174,9 +134,9 @@ static void chassis_pid_run(void)
     }
 
     /* ② 摇杆 -> 三个"意图转速"（单位：转子 rpm，前进为正）*/
-    vx = rc_axis(RC_CH_VX) * (float)RC_SIGN_VX * CHASSIS_PID_MAX_RPM;
-    vy = rc_axis(RC_CH_VY) * (float)RC_SIGN_VY * CHASSIS_PID_MAX_RPM;
-    wz = rc_axis(RC_CH_WZ) * (float)RC_SIGN_WZ * CHASSIS_PID_MAX_RPM;
+    vx = input_axis(INPUT_AXIS_CHASSIS_X) * CHASSIS_PID_MAX_RPM;
+    vy = input_axis(INPUT_AXIS_CHASSIS_Y) * CHASSIS_PID_MAX_RPM;
+    wz = input_axis(INPUT_AXIS_CHASSIS_WZ) * CHASSIS_PID_MAX_RPM;
 
     /* ③ 逆运动学 -> 四轮目标转速（下标 0~3 = FR, FL, RL, RR）*/
     tgt[0] = vx + vy + wz;    /* FR */

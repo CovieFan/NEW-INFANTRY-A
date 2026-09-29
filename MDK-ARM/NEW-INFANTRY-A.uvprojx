@@ -614,6 +614,16 @@
               <FileType>5</FileType>
               <FilePath>..\USER\device\gimbal.h</FilePath>
             </File>
+            <File>
+              <FileName>input.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\USER\application\input.c</FilePath>
+            </File>
+            <File>
+              <FileName>input.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\USER\application\input.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
