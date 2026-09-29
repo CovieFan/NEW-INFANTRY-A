@@ -25,17 +25,15 @@
 
 #define RC_DEADBAND     30          /* 摇杆死区，防中位漂移 */
 
-/* ================= 4c-1 单轮闭环测试 ================= */
-#define CHASSIS_PID_TEST    1U          /* ★总开关：测完改回 0U */
-#define CHASSIS_TEST_RPM    1000.0f     /* 0 号轮(FR)的目标转速，单位 = 转子 rpm */
+/* ================= 4c-2 四轮转速闭环（遥控驱动） ================= */
+#define CHASSIS_PID_TEST     1U          /* ★总开关：测完改回 0U */
+#define CHASSIS_PID_MAX_RPM  3000.0f     /* 摇杆推到底的目标转速（转子 rpm）*/
 
-/* PID 参数：⭐ 第一次只留 Kp，Ki / Kd 置 0 */
-#define CHASSIS_PID_KP      15.0f
-#define CHASSIS_PID_KI      0.0f
-#define CHASSIS_PID_KD      0.0f
-#define CHASSIS_PID_OUT_LIM 3000.0f     /* 输出（电流）上限 */
-#define CHASSIS_PID_INT_LIM 3000.0f     /* 积分限幅 */
-
+#define CHASSIS_PID_KP       15.0f
+#define CHASSIS_PID_KI       0.0f
+#define CHASSIS_PID_KD       0.0f
+#define CHASSIS_PID_OUT_LIM  3000.0f     /* 单轮电流上限 */
+#define CHASSIS_PID_INT_LIM  3000.0f
 
 
 void chassis_run(void);      /* 主循环每圈调一次 */

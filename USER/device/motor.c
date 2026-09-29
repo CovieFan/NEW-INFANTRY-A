@@ -41,7 +41,7 @@ void motor_init(void)
         motor_fb[i].online    = 0U;
         motor_fb[i].last_ms   = 0U;
     }
-    bsp_can_register(motor_rx);               /* 谁注册谁实现，bsp 不认识"电机" */
+        bsp_can_register(BSP_CAN_1, 0x201U, 0x204U, motor_rx);   /* 底盘 4 个电调只在 CAN1 上 */
 }
 
 void motor_send_current(const int16_t cur[4])
@@ -55,5 +55,5 @@ void motor_send_current(const int16_t cur[4])
         data[2U * i]      = (uint8_t)((uint16_t)c >> 8U);   /* 高字节在前 */
         data[2U * i + 1U] = (uint8_t)((uint16_t)c & 0xFFU);
     }
-    (void)bsp_can_send_frame(MOTOR_CMD_ID, data, 8U);
+    (void)bsp_can_send_frame(BSP_CAN_1, MOTOR_CMD_ID, data, 8U);
 }

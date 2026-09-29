@@ -31,6 +31,7 @@
 #include "motor.h"
 #include "remote.h"
 #include "chassis.h"
+#include "gimbal.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -93,7 +94,7 @@ int main(void)
 
   /* USER CODE END SysInit */
 
-  /* Initialize all configured peripherals */
+   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_CAN1_Init();
   MX_CAN2_Init();
@@ -106,6 +107,7 @@ int main(void)
   bsp_buzzer_beep(200);          /* 上电"滴"一声 = 烧录成功 */
   bsp_can_init();
   motor_init();                  /* ← 新增：注册电机反馈回调 */
+	gimbal_init();                 /* ← 新增：注册云台反馈（只收不发） */
   remote_init();
   HAL_TIM_Base_Start_IT(&htim6);   /* ← 新增：启动 1kHz 控制节拍 */
   BspPrintf("CAN1 init\r\n");

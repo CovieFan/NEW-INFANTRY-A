@@ -604,6 +604,16 @@
               <FileType>5</FileType>
               <FilePath>..\USER\controller\pid.h</FilePath>
             </File>
+            <File>
+              <FileName>gimbal.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\USER\device\gimbal.c</FilePath>
+            </File>
+            <File>
+              <FileName>gimbal.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\USER\device\gimbal.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
