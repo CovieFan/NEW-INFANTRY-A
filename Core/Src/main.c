@@ -71,7 +71,6 @@ void SystemClock_Config(void);
   * @retval int
   */
 int main(void)
-
 {
 
   /* USER CODE BEGIN 1 */
@@ -94,7 +93,7 @@ int main(void)
 
   /* USER CODE END SysInit */
 
-   /* Initialize all configured peripherals */
+  /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_CAN1_Init();
   MX_CAN2_Init();
@@ -175,7 +174,9 @@ void SystemClock_Config(void)
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance != TIM6) { return; }   /* TIM12 是蜂鸣器 PWM，不管 */
-    chassis_run();                            /* ← 1kHz 控制节拍跑在这里 */
+     remote_update();
+    //chassis_run();                            /* ← 1kHz 控制节拍跑在这里 */
+    gimbal_run(); 
 }
 /* USER CODE END 4 */
 

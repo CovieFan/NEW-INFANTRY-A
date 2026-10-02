@@ -25,7 +25,7 @@
 #define INPUT_CH_CHASSIS_WZ        0U
 /* ⚠️ 测试期临时映射：云台 yaw 借右摇杆纵向 ch1（避免和底盘抢 ch0）。
    正式版会改回 ch0 + 拨杆模式仲裁 —— 和 ARBATOS 的 INPUT_AXIS_GIMBAL_YAW = ch0 一致。 */
-#define INPUT_CH_GIMBAL_YAW        1U
+#define INPUT_CH_GIMBAL_YAW        0U
 #define INPUT_CH_GIMBAL_PITCH      1U
 
 #define INPUT_DEADBAND             30   /* 摇杆死区，防中位漂移 */

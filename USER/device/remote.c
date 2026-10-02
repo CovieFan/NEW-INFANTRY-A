@@ -18,6 +18,7 @@ void remote_init(void)
 {
     /* 开启"空闲中断 + 中断接收"：总线一空闲就认为一帧收完，回调我们 */
     (void)HAL_UARTEx_ReceiveToIdle_IT(&huart1, s_rx_buf, sizeof(s_rx_buf));
+    //让 huart1 开始收数据，收到一帧后自动喊回调函数来处理。
 }
 
 /* HAL 在 USART1 中断里回调：一帧收完（或总线空闲）时进这里 */

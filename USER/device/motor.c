@@ -42,6 +42,7 @@ void motor_init(void)
         motor_fb[i].last_ms   = 0U;
     }
         bsp_can_register(BSP_CAN_1, 0x201U, 0x204U, motor_rx);   /* 底盘 4 个电调只在 CAN1 上 */
+        /*这一步是向CAN注册回调，这个注册回调的函数在bsp_can里面，因此在main函数里面进行初始化的时候需要先把bsp_can初始化，再把本文件初始化*/
 }
 
 void motor_send_current(const int16_t cur[4])

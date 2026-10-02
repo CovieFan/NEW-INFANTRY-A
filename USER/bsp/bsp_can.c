@@ -94,7 +94,7 @@ uint8_t bsp_can_register(uint8_t bus, uint32_t id_first, uint32_t id_last, bsp_c
     if (handler == 0)                              { return 0U; }
     if (id_first > id_last)                        { return 0U; }
     if ((bus != BSP_CAN_1) && (bus != BSP_CAN_2))  { return 0U; }
-    if (s_slot_cnt >= BSP_CAN_MAX_SLOT)            { return 0U; }
+    if (s_slot_cnt >= BSP_CAN_MAX_SLOT)            { return 0U; }//看一下表满了吗
 
     s_slot[s_slot_cnt].bus      = bus;
     s_slot[s_slot_cnt].id_first = id_first;
