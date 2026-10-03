@@ -158,42 +158,27 @@
         <Ww>
           <count>0</count>
           <WinNumber>1</WinNumber>
-          <ItemText>g_gimbal_tx_pitch_fail,0x0A</ItemText>
+          <ItemText>g_gimbal_tx_pitch,0x0A</ItemText>
         </Ww>
         <Ww>
           <count>1</count>
           <WinNumber>1</WinNumber>
-          <ItemText>g_gimbal_tx_pitch_ok,0x0A</ItemText>
+          <ItemText>gimbal_fb[1].angle,0x0A</ItemText>
         </Ww>
         <Ww>
           <count>2</count>
           <WinNumber>1</WinNumber>
-          <ItemText>g_gimbal_rx_cnt[1],0x0A</ItemText>
+          <ItemText>gimbal_fb[1].current_meas,0x0A</ItemText>
         </Ww>
         <Ww>
           <count>3</count>
           <WinNumber>1</WinNumber>
-          <ItemText>remote.ch1,0x0A</ItemText>
+          <ItemText>g_pitch_err</ItemText>
         </Ww>
         <Ww>
           <count>4</count>
           <WinNumber>1</WinNumber>
-          <ItemText>g_gimbal_tx_pitch,0x0A</ItemText>
-        </Ww>
-        <Ww>
-          <count>5</count>
-          <WinNumber>1</WinNumber>
-          <ItemText>gimbal_fb[1].angle,0x0A</ItemText>
-        </Ww>
-        <Ww>
-          <count>6</count>
-          <WinNumber>1</WinNumber>
-          <ItemText>gimbal_fb[1].current_meas,0x0A</ItemText>
-        </Ww>
-        <Ww>
-          <count>7</count>
-          <WinNumber>1</WinNumber>
-          <ItemText>	g_gimbal_tx_yaw,0x0A</ItemText>
+          <ItemText>s_pid_pitch,0x0A</ItemText>
         </Ww>
       </WatchWindow1>
       <Tracepoint>

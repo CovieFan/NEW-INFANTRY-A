@@ -102,11 +102,11 @@ int main(void)
   MX_USART1_UART_Init();
   MX_TIM12_Init();
   /* USER CODE BEGIN 2 */
-  bsp_buzzer_init();
-  bsp_buzzer_beep(200);          /* 上电"滴"一声 = 烧录成功 */
+  bsp_buzzer_init();  
+  bsp_buzzer_beep(200);            /* 上电"滴"一声 = 烧录成功 */
   bsp_can_init();
-  motor_init();                  /* ← 新增：注册电机反馈回调 */
-	gimbal_init();                 /* ← 新增：注册云台反馈（只收不发） */
+  motor_init();                    /* ← 新增：注册电机反馈回调 */
+	gimbal_init();                   /* ← 新增：注册云台反馈（只收不发） */
   remote_init();
   HAL_TIM_Base_Start_IT(&htim6);   /* ← 新增：启动 1kHz 控制节拍 */
   BspPrintf("CAN1 init\r\n");

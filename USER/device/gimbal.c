@@ -228,7 +228,72 @@ static float gimbal_yaw_control(void)
     return g_yaw_pid_out;
 }
 
+/* ============ 步5d-2：PITCH 角度环（闭环）============
+   基准 = 固定的"水平值"：上电时云台在任意位置，都会自己往水平靠。
+   ⚠️ 实测：往下 angle 减小 / 往上 angle 增大 ⇒ 不取反（正命令 = 往上） */
 
+#define GIMBAL_PITCH_LEVEL      6000    /* ★实测：云台水平时 gimbal_fb[1].angle 的值 */
+#define GIMBAL_PITCH_ENC_RANGE  8192L   /* 13 位编码器 */
+#define GIMBAL_PITCH_ENC_HALF   4096L   /* 半圈，用于回绕修正 */
+
+#define GIMBAL_PITCH_KP         12.0f    /* ★先保守；err 单位 = 编码器计数 */
+#define GIMBAL_PITCH_KI         0.01f    /* 先纯 P；pitch 有重力，最后要加（见上面表格） */
+#define GIMBAL_PITCH_KD         0.0f
+#define GIMBAL_PITCH_OUT_LIM    2000.0f /* ★必须 = GIMBAL_PITCH_CMD_MAX（手册量程 ±5000） */
+#define GIMBAL_PITCH_INT_LIM    200000.0f    /* KI=0 用不上；加 KI 时改 200000.0f */
+
+#define GIMBAL_PITCH_TGT_RATE   2.0f    /* 满杆目标角速度 = 2000 计数/秒（≈88°/s） */
+#define GIMBAL_PITCH_TGT_LIMIT  800.0f  /* 软限位：相对水平 ±800 计数（≈±35°） */
+
+#define GIMBAL_PITCH_DIR        (-1.0f)//改方向
+
+
+volatile float   g_pitch_tgt     = 0.0f;   /* 目标；0 = 水平 */
+volatile float   g_pitch_fb      = 0.0f;   /* 反馈；正 = 水平上方 */
+volatile float   g_pitch_err     = 0.0f;   /* 误差 = 目标 − 反馈 */
+volatile float   g_pitch_pid_out = 0.0f;   /* PID 输出（= 要发给电调的电流命令）*/
+volatile uint8_t g_pitch_hold    = 0U;     /* 1 = 目标顶在软限位上 */
+
+pid_t   s_pid_pitch;
+static uint8_t s_pitch_ready = 0U;
+
+
+/* 把"原始角 0~8191"换算成"相对水平的偏差"：正 = 水平上方
+   为什么要有回绕修正：万一 angle 从 0 跳到 8191，直接相减会得到 ±8192 的假误差 */
+static float gimbal_pitch_fb(void)
+{
+    int32_t d = (int32_t)gimbal_fb[GIMBAL_AXIS_PITCH].angle - (int32_t)GIMBAL_PITCH_LEVEL;
+
+    if (d >  GIMBAL_PITCH_ENC_HALF) { d -= GIMBAL_PITCH_ENC_RANGE; }
+    if (d < -GIMBAL_PITCH_ENC_HALF) { d += GIMBAL_PITCH_ENC_RANGE; }
+
+    return (float)d;
+}
+
+/* 步5d-3：只做"松手自稳" —— 目标固定为水平，不接摇杆 */
+static float gimbal_pitch_control(void)
+{
+    /* ① 首次上电 → PID 复位，本帧先不发电流 */
+    if (s_pitch_ready == 0U)
+    {
+        pid_init(&s_pid_pitch, GIMBAL_PITCH_KP, GIMBAL_PITCH_KI, GIMBAL_PITCH_KD,
+                 GIMBAL_PITCH_OUT_LIM, GIMBAL_PITCH_INT_LIM);
+        g_pitch_tgt     = 0.0f;
+        g_pitch_fb      = gimbal_pitch_fb();
+        g_pitch_err     = 0.0f;
+        g_pitch_pid_out = 0.0f;
+        s_pitch_ready   = 1U;
+        return 0.0f;
+    }
+
+    /* ② 目标恒 = 0 = 水平；反馈以"水平 = 0、上方为正"为单位 → 直接相减，不取反 */
+    g_pitch_tgt     = 0.0f;
+    g_pitch_fb      = gimbal_pitch_fb();
+    g_pitch_err     = g_pitch_tgt - g_pitch_fb;
+    g_pitch_pid_out = pid_calc(&s_pid_pitch, g_pitch_tgt, g_pitch_fb) * GIMBAL_PITCH_DIR;
+
+    return g_pitch_pid_out;
+}
 
 /* ================= 步5b-1：YAW 开环（RAW 模式） =================
    ⚠️ 本步只验证"云台能动"，不是最终形态。5c 会升级成角度环。 */
@@ -264,10 +329,9 @@ void gimbal_send_yaw(int16_t cmd)
 
 void gimbal_run(void)
 {
-    float   out;
-    int16_t pitch = 0;
+    float out;
 
-    gimbal_angle_track();               /* 5c-1：算连续多圈角度 */
+    gimbal_angle_track();               /* 5c-1：yaw 的连续多圈角度（本步不动） */
 
     /* ========== YAW（6020 @ CAN1）：角度环 ========== */
 #if (GIMBAL_RAW_TEST_ENABLE != 0U)
@@ -275,12 +339,13 @@ void gimbal_run(void)
 #else
     out = 0.0f;
 #endif
-    //gimbal_send_yaw((int16_t)out);
+    //gimbal_send_yaw((int16_t)out);    /* ★YAW轴不动 */
 
-    /* ========== PITCH（6623 @ CAN2）：本步只做开环 ========== */
-    if (remote.online != 0U)            /* 掉线 → 保持 0（安全）*/
-    {
-        pitch = (int16_t)(input_axis(INPUT_AXIS_GIMBAL_PITCH) * (float)GIMBAL_PITCH_CMD_MAX);
-    }
-    gimbal_send_pitch(pitch);
+    /* ========== PITCH（6623 @ CAN2）：角度环（闭环）========== */
+#if (GIMBAL_RAW_TEST_ENABLE != 0U)
+    out = gimbal_pitch_control();
+#else
+    out = 0.0f;
+#endif
+    gimbal_send_pitch((int16_t)out);
 }
