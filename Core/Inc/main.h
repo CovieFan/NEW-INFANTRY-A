@@ -57,6 +57,8 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define MPU6500_CS_Pin GPIO_PIN_6
+#define MPU6500_CS_GPIO_Port GPIOF
 
 /* USER CODE BEGIN Private defines */
 

@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "can.h"
+#include "spi.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -32,6 +33,7 @@
 #include "remote.h"
 #include "chassis.h"
 #include "gimbal.h"
+#include "bsp_imu.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -101,10 +103,12 @@ int main(void)
   MX_UART8_Init();
   MX_USART1_UART_Init();
   MX_TIM12_Init();
+  MX_SPI5_Init();
   /* USER CODE BEGIN 2 */
   bsp_buzzer_init();  
   bsp_buzzer_beep(200);            /* 上电"滴"一声 = 烧录成功 */
   bsp_can_init();
+  bsp_imu_init();                  /* ← 新增：MPU6500 自检 + 配置 */
   motor_init();                    /* ← 新增：注册电机反馈回调 */
 	gimbal_init();                   /* ← 新增：注册云台反馈（只收不发） */
   remote_init();
@@ -174,8 +178,9 @@ void SystemClock_Config(void)
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance != TIM6) { return; }   /* TIM12 是蜂鸣器 PWM，不管 */
-     remote_update();
-    //chassis_run();                            /* ← 1kHz 控制节拍跑在这里 */
+    remote_update();
+    bsp_imu_update();  //读IMU
+    chassis_run();                            /* ← 1kHz 控制节拍跑在这里 */
     gimbal_run(); 
 }
 /* USER CODE END 4 */
