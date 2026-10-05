@@ -27,7 +27,6 @@ float pid_calc(pid_t *p, float target, float feedback)
     p->feedback = feedback;
     p->error    = target - feedback;
 
-    /* 积分累积 + 限幅（防积分饱和：误差一直存在时积分不会无限涨） */
     p->integral += p->error;
     if (p->integral > p->integral_limit)
     {

@@ -136,7 +136,8 @@ static void chassis_pid_run(void)
     /* ② 摇杆 -> 三个"意图转速"（单位：转子 rpm，前进为正）*/
     vx = input_axis(INPUT_AXIS_CHASSIS_X) * CHASSIS_PID_MAX_RPM;
     vy = input_axis(INPUT_AXIS_CHASSIS_Y) * CHASSIS_PID_MAX_RPM;
-    wz = input_axis(INPUT_AXIS_CHASSIS_WZ) * CHASSIS_PID_MAX_RPM;
+    /* ★自转不再读摇杆：由拨杆中位决定（ch0 让给云台 yaw） */
+    wz = (input_spin_on() != 0U) ? CHASSIS_SPIN_FIXED_RPM : 0.0f;
 
     /* ③ 逆运动学 -> 四轮目标转速（下标 0~3 = FR, FL, RL, RR）*/
     tgt[0] = vx + vy + wz;    /* FR */

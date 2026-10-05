@@ -167,26 +167,31 @@ static void gimbal_angle_track(void)
    松手 → 目标不变 → 云台锁住；到限位 → 顶住
    方向已实测确认（正电压 = acc 增大）⇒ PID 输出不需要 ×(-1) */
 
-#define GIMBAL_YAW_KP        3.0f      /* ★先保守，看现象再调（err 单位=编码器单位）*/
+#define GIMBAL_YAW_KP        20.0f      /* ★先保守，看现象再调（err 单位=编码器单位）*/
 #define GIMBAL_YAW_KI        0.0f
 #define GIMBAL_YAW_KD        0.0f
-#define GIMBAL_YAW_OUT_LIM   4000.0f   /* ★第一版故意压小：万一方向反了也只是"慢慢转"，不会飞 */
+#define GIMBAL_YAW_OUT_LIM   10000.0f   /* ★第一版故意压小：万一方向反了也只是"慢慢转"，不会飞 */
 #define GIMBAL_YAW_INT_LIM   0.0f      /* KI=0，用不上 */
 
-#define GIMBAL_YAW_TGT_RATE  2.5f      /* 满杆目标角速度 = 1500 单位/秒（实测上限 2000+，留余量）*/
-#define GIMBAL_YAW_TGT_LIMIT 4096.0f   /* ★软限位 ≈ ±90°（第一版保守；测出行程后再放宽）*/
+#define GIMBAL_YAW_TGT_RATE  5.0f      /* 满杆目标角速度 = 1500 单位/秒（实测上限 2000+，留余量）*/
+#define GIMBAL_YAW_TGT_LIMIT 1000000.0f  /* ★软限位，不过这里给的值很大，约等于没限位*/
+
+#define GIMBAL_YAW_DAMP      60.0f   /* 输出单位 / rpm（起始值，按现象调） */
 
 volatile float   g_yaw_tgt     = 0.0f;   /* 目标角度（连续多圈）*/
 volatile float   g_yaw_err     = 0.0f;   /* 误差 = 目标 − 反馈 */
 volatile float   g_yaw_pid_out = 0.0f;   /* PID 算出来的电压（本步会真的发出去）*/
 volatile uint8_t g_yaw_hold    = 0U;     /* 1 = 目标已经顶在软限位上 */
+volatile float   g_yaw_damp_out = 0.0f;  /* Watch：阻尼项的值 */
 
-static pid_t   s_pid_yaw;
+
+pid_t   s_pid_yaw;
 static uint8_t s_yaw_ready = 0U;
 
 static float gimbal_yaw_control(void)
 {
     float axis;
+    float out; 
 
     /* ① ★首次 / 掉线 → 目标贴着当前位置 + PID 复位
        （防"上电瞬间窜向目标" + 防"掉线期间积分涨满、重连窜一下"）*/
@@ -198,6 +203,7 @@ static float gimbal_yaw_control(void)
         g_yaw_err     = 0.0f;
         g_yaw_pid_out = 0.0f;
         g_yaw_hold    = 0U;
+        g_yaw_damp_out = 0.0f;      /* ★新增 */
         s_yaw_ready   = 1U;
         return 0.0f;
     }
@@ -209,6 +215,7 @@ static float gimbal_yaw_control(void)
         g_yaw_err     = 0.0f;
         g_yaw_pid_out = 0.0f;
         g_yaw_hold    = 0U;
+        g_yaw_damp_out = 0.0f;      /* ★新增 */
         return 0.0f;
     }
 
@@ -225,7 +232,16 @@ static float gimbal_yaw_control(void)
     g_yaw_err     = g_yaw_tgt - (float)g_yaw_angle_acc;
     g_yaw_pid_out = pid_calc(&s_pid_yaw, g_yaw_tgt, (float)g_yaw_angle_acc);
 
-    return g_yaw_pid_out;
+    /* ⑤ ★速度阻尼：对抗"云台正在转动"，提供相位超前 */
+    g_yaw_damp_out = GIMBAL_YAW_DAMP * (float)gimbal_fb[GIMBAL_AXIS_YAW].speed_rpm;
+
+    /* ⑥ 叠加 + 重新限幅
+       （pid_calc 只夹了 PID 自己的输出，叠加之后必须再夹一次） */
+    out = g_yaw_pid_out - g_yaw_damp_out;      /* ← 符号按第三节的判据定 */
+    if (out >  (float)GIMBAL_YAW_OUT_LIM) { out =  (float)GIMBAL_YAW_OUT_LIM; }
+    if (out < -(float)GIMBAL_YAW_OUT_LIM) { out = -(float)GIMBAL_YAW_OUT_LIM; }
+
+    return out;
 }
 
 /* ============ 步5d-2：PITCH 角度环（闭环）============
@@ -339,7 +355,7 @@ void gimbal_run(void)
 #else
     out = 0.0f;
 #endif
-    //gimbal_send_yaw((int16_t)out);    /* ★YAW轴不动 */
+    gimbal_send_yaw((int16_t)out);     /* ★YAW 恢复输出（由 ch0 控制） */
 
     /* ========== PITCH（6623 @ CAN2）：角度环（闭环）========== */
 #if (GIMBAL_RAW_TEST_ENABLE != 0U)

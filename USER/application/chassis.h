@@ -24,6 +24,10 @@
 #define CHASSIS_PID_OUT_LIM  3000.0f     /* 单轮电流上限 */
 #define CHASSIS_PID_INT_LIM  3000.0f
 
+/* ★新增：拨杆中位时底盘自转的固定目标转速（转子 rpm）
+   1000 = CHASSIS_PID_MAX_RPM(3000) × 1/3  ← 猜的：先取保守值，实测再调 */
+#define CHASSIS_SPIN_FIXED_RPM  1000.0f
+
 
 void chassis_run(void);      /* 主循环每圈调一次 */
 

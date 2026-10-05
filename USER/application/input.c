@@ -68,3 +68,12 @@ float input_axis(uint8_t role)
     if (m->invert != 0U) { a = -a; }
     return a;
 }
+
+/* ---- 拨杆语义：拨杆中位 = 底盘自转开启 ----
+   ⚠️ 只在【明确读到 3】时才返回 1：
+      无效值（例如 0）或遥控掉线，一律当作"关" —— 失败方向偏安全 */
+uint8_t input_spin_on(void)
+{
+    if (remote.online == 0U) { return 0U; }
+    return (remote.sw2 == INPUT_SW_MID) ? 1U : 0U;
+}

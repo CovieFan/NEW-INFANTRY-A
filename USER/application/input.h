@@ -30,6 +30,12 @@
 
 #define INPUT_DEADBAND             30   /* 摇杆死区，防中位漂移 */
 
+#define INPUT_SW_UP     1U
+#define INPUT_SW_DOWN   2U
+#define INPUT_SW_MID    3U
+
+/* 底盘自转开关：拨杆在中位 -> 1；掉线 / 无效值 -> 0 */
+uint8_t input_spin_on(void);
 /* 返回该角色方向上的归一化意图：-1.0 ~ +1.0（死区内为 0，角色非法为 0） */
 float input_axis(uint8_t role);
 

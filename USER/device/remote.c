@@ -75,8 +75,8 @@ static void remote_unpack(const uint8_t *buff)
     remote.ch2 = (int16_t)((((buff[2] >> 6) | (buff[3] << 2) | (buff[4] << 10)) & 0x07FFU) - 1024);
     remote.ch3 = (int16_t)((((buff[4] >> 1) | (buff[5] << 7))                   & 0x07FFU) - 1024);
 
-    remote.sw1 = (uint8_t)(((buff[5] >> 4) & 0x03U));
-    remote.sw2 = (uint8_t)((buff[5] >> 6) & 0x03U);
+    remote.sw1 = ((buff[5] >> 4) & 0x000C)>>2;
+    remote.sw2 = (buff[5] >> 4) & 0x0003;
 
     remote.last_ms = HAL_GetTick();
 }
