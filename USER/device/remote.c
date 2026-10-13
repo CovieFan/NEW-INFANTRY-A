@@ -1,5 +1,5 @@
 #include "remote.h"
-#include "usart.h"          /* CubeMX 的：huart1 */
+#include "usart.h"          
 #include "main.h"
 
 #define RC_BUF_SIZE  64U    /* DBUS 一帧 18 字节，缓冲区开大点防溢出 */
@@ -49,7 +49,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
     (void)HAL_UARTEx_ReceiveToIdle_IT(&huart1, s_rx_buf, sizeof(s_rx_buf));
 }
 
-void remote_update(void)
+void remote_update(void)//在线判定
 {
        uint32_t now = HAL_GetTick();
 

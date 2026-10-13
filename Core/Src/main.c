@@ -124,7 +124,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-
+    bsp_imu_update();  //读IMU
  }
   /* USER CODE END 3 */
 }
@@ -179,7 +179,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance != TIM6) { return; }   /* TIM12 是蜂鸣器 PWM，不管 */
     remote_update();
-    bsp_imu_update();  //读IMU
+
     chassis_run();                            /* ← 1kHz 控制节拍跑在这里 */
     gimbal_run(); 
 }

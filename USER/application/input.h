@@ -28,7 +28,7 @@
 #define INPUT_CH_GIMBAL_YAW        0U
 #define INPUT_CH_GIMBAL_PITCH      1U
 
-#define INPUT_DEADBAND             30   /* 摇杆死区，防中位漂移 */
+#define INPUT_DEADBAND             60   /* 摇杆死区，防中位漂移 */
 
 #define INPUT_SW_UP     1U
 #define INPUT_SW_DOWN   2U

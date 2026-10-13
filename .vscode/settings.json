@@ -1,3 +1,32 @@
 {
-    "cmake.sourceDirectory": "C:/Users/fan/Desktop/Robomaster资料合集/ProjectBymyselg/NEW-INFANTRY-A/Drivers/CMSIS/NN"
+  "//": "NEW-INFANTRY-A（STM32F427IIHx）—— VSCode + CMake + Ninja + GCC + DAPLink 的最小配置",
+  "//1": "工具链用绝对路径写死，不依赖 PATH（VSCode 可能是在改 PATH 之前启动的）",
+  "//2": "原来那行 cmake.sourceDirectory 指向 Drivers/CMSIS/NN，是错的，已删掉",
+
+  "cmake.cmakePath": "D:/Cmake/bin/cmake.exe",
+  "cmake.useCMakePresets": "always",
+  "cmake.configureOnOpen": true,
+  "cmake.configurePreset": "Debug",
+  "cmake.buildPreset": "Debug",
+
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/build/Debug/compile_commands.json",
+  "C_Cpp.default.intelliSenseMode": "windows-gcc-arm",
+  "C_Cpp.default.cStandard": "c11",
+
+  "cortex-debug.armToolchainPath": "D:/ST/STM32CubeIDE_1.19.0/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.win32_1.0.0.202411081344/tools/bin",
+  "cortex-debug.openocdPath": "D:/ST/STM32CubeIDE_1.19.0/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.externaltools.openocd.win32_2.4.200.202505051030/tools/bin/openocd.exe",
+
+  "files.associations": {
+    "*.s": "asm",
+    "*.ld": "linkerscript",
+    "*.ioc": "plaintext"
+  },
+  "files.exclude": {
+    "**/build": true,
+    "**/MDK-ARM/NEW-INFANTRY-A": true
+  },
+  "search.exclude": {
+    "**/build": true,
+    "**/Drivers": true
+  }
 }

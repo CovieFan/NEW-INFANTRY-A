@@ -20,3 +20,5 @@ MDK-ARM/NEW-INFANTRY-A/
 # 编辑器 / 编译日志（每次编译都变，不进版本库）
 *.log
 *.log.lock
+# CMake 构建产物（新增 2026-10-13）
+build/

@@ -1,0 +1,54 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "配置 CMake (Debug)",
+      "type": "shell",
+      "command": "D:/Cmake/bin/cmake.exe",
+      "args": ["--preset", "Debug"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "编译 NEW-INFANTRY-A (Debug)",
+      "type": "shell",
+      "command": "D:/Cmake/bin/cmake.exe",
+      "args": ["--build", "--preset", "Debug"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "编译 NEW-INFANTRY-A (Release)",
+      "type": "shell",
+      "command": "D:/Cmake/bin/cmake.exe",
+      "args": ["--build", "--preset", "Release"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "全量重编 (删 build 后重新配置)",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-Command",
+        "Remove-Item -Recurse -Force '${workspaceFolder}/build' -ErrorAction SilentlyContinue; D:/Cmake/bin/cmake.exe --preset Debug; D:/Cmake/bin/cmake.exe --build --preset Debug"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "烧录 NEW-INFANTRY-A (Debug)",
+      "type": "shell",
+      "command": "${config:cortex-debug.openocdPath}",
+      "args": [
+        "-f", "openocd/cmsis-dap-f427.cfg",
+        "-c", "program build/Debug/NEW-INFANTRY-A.elf verify reset exit"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "dependsOn": "编译 NEW-INFANTRY-A (Debug)",
+      "problemMatcher": []
+    }
+  ]
+}

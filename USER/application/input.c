@@ -39,7 +39,7 @@ static int16_t input_read_ch(uint8_t ch)
     }
 }
 
-float input_axis(uint8_t role)
+float input_axis(uint8_t role)//axis=轴
 {
     const input_map_t *m;
     int16_t ch;

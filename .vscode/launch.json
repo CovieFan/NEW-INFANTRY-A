@@ -1,0 +1,32 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "调试 NEW-INFANTRY-A (DAPLink + OpenOCD)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/Debug/NEW-INFANTRY-A.elf",
+      "servertype": "openocd",
+      "configFiles": ["${workspaceFolder}/openocd/cmsis-dap-f427.cfg"],
+      "interface": "swd",
+      "device": "STM32F427II",
+      "svdFile": "D:/ST/STM32CubeIDE_1.19.0/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.productdb.debug_2.2.200.202506131328/resources/cmsis/STMicroelectronics_CMSIS_SVD/STM32F427.svd",
+      "runToEntryPoint": "main",
+      "preLaunchTask": "编译 NEW-INFANTRY-A (Debug)"
+    },
+    {
+      "name": "调试 · 停在复位向量 (DAPLink + OpenOCD)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/Debug/NEW-INFANTRY-A.elf",
+      "servertype": "openocd",
+      "configFiles": ["${workspaceFolder}/openocd/cmsis-dap-f427.cfg"],
+      "interface": "swd",
+      "device": "STM32F427II",
+      "svdFile": "D:/ST/STM32CubeIDE_1.19.0/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.productdb.debug_2.2.200.202506131328/resources/cmsis/STMicroelectronics_CMSIS_SVD/STM32F427.svd",
+      "preLaunchTask": "编译 NEW-INFANTRY-A (Debug)"
+    }
+  ]
+}

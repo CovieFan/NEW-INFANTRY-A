@@ -75,7 +75,7 @@ void gimbal_init(void);     /* 只注册接收；本步不发任何指令 */
 #define GIMBAL_RAW_TEST_ENABLE  1U
 
 /* ★测试期量程：先 3000，稳了再往上加（上限 16384） */
-#define GIMBAL_YAW_CMD_MAX      10000
+#define GIMBAL_YAW_CMD_MAX      20000
 
 extern volatile int16_t  g_gimbal_tx_yaw;     /* 实际发出去的命令值（限幅后） */
 extern volatile uint32_t g_gimbal_tx_ok;      /* 发送成功帧数 */
