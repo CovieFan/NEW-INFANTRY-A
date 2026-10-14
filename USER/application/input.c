@@ -23,8 +23,8 @@ static const input_map_t s_input_map[INPUT_AXIS_COUNT] =
    rc_full_pos[ch] = 通道 ch「读数为正」方向推到底的幅度
    rc_full_neg[ch] = 通道 ch「读数为负」方向推到底的幅度
    正常轴两个方向都是 660（DJI：1684-1024）。
-   ⚠️ ch2 的某一侧实测只有 ~150 —— 在这里单独补偿（是"补偿"，不是"修复"）。 */
-static const float rc_full_pos[4] = { 660.0f, 660.0f, 150.0f, 660.0f };
+   ⚠️ */
+static const float rc_full_pos[4] = { 660.0f, 660.0f, 660.0f, 660.0f };
 static const float rc_full_neg[4] = { 660.0f, 660.0f, 660.0f, 660.0f };
 
 static int16_t input_read_ch(uint8_t ch)

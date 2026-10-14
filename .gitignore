@@ -22,3 +22,4 @@ MDK-ARM/NEW-INFANTRY-A/
 *.log.lock
 # CMake 构建产物（新增 2026-10-13）
 build/
+.agents/skills/_emberprobe/agent-bridge.json

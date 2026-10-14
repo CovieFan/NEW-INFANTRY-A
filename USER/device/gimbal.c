@@ -124,36 +124,33 @@ void gimbal_init(void)
 #define GIMBAL_ENC_HALF    4096L    /* 半圈，用来判"是否发生回绕" */
 #define GIMBAL_ANGLE_GAP   50U      /* 超过这么久没新帧 → 重新对齐（防掉线后跳变） */
 
-volatile int32_t g_yaw_angle_acc   = 0;   /* ★累计多圈角度（连续，不会跳） */
+volatile int32_t g_yaw_angle_acc   = 0;   /* 6020电机编码器累积的值，相对于底盘。这个数据是准的，因此在底盘不动的情况下可以当作漂移指示器来用 */
 volatile int16_t g_yaw_angle_raw   = 0;   /* 本帧原始角度 0~8191 */
 volatile int16_t g_yaw_angle_delta = 0;   /* 本帧增量（正常只有几十以内） */
 volatile uint8_t g_angle_rebased   = 0U;  /* 1 = 刚刚重新对齐过基准（控制层要跟着重贴目标）*/
 
-volatile float   g_yaw_imu_angle  = 0.0f;  /* ★陀螺积分角 (rad)：相对大地 */
-volatile   float   s_yaw_imu_lpf    = 0.0f;  /* ★60Hz 低通后的值 —— 外环反馈用它 */
+volatile float   g_yaw_imu_angle  = 0.0f;  /* IMU的积分角，相对于大地 */
+volatile float   s_yaw_imu_lpf    = 0.0f;  /* ★60Hz 低通后的值 —— 外环反馈用它  lpf	low-pass filter，低通滤波*/
+volatile float   g_yaw_angle_deg   = 0.0f;  /*YAW6020电机编码器反馈的实际度数 */
+volatile float   s_yaw_imu_deg     = 0.0f;  /* 外环IMU反馈的实际度数 */
 static   uint8_t s_imu_ang_inited = 0U;
 
 
 static uint8_t  s_angle_started  = 0U;
 
-static void gimbal_angle_track(void)
+static void gimbal_angle_track(void)//云台编码器累积
+/*加了一堆保护，本质其实就是把d累加到g_yaw_angle_acc，其中d本质是delta，是两次RAW之差*/
 {
     int16_t  raw = gimbal_fb[GIMBAL_AXIS_YAW].angle;
     int32_t  d;
     uint32_t now = HAL_GetTick();
     uint32_t last_rx = gimbal_fb[GIMBAL_AXIS_YAW].last_ms;   /* ★电机反馈帧自己的时间戳 */
 
-    /* ① ★还没收到过任何一帧 6020 反馈 → 什么都不做！
-          （此时 angle 还是初值 0：既不能当基准，也不能置 s_angle_started；
-            否则真实反馈到来的那一帧 d = 真实值 - 0 是个大数 → 角度跳变 → 上电暴冲）*/
-    if (last_rx == 0U)
+    if (last_rx == 0U)/*还没收到反馈，啥也不干*/
     {
         return;
     }
-    /* ① 建立基准（不累加）的条件：
-          - 还没开始过；或
-          - 从没收到过 6020 反馈（last_rx == 0，此时 angle 还是初值 0，不能当基准！）
-          - 或 反馈超过 GIMBAL_ANGLE_GAP 没更新（掉线后回来，基准不可信）*/
+    /*  没开始，电机掉线，没收到电机反馈值不累加*/
     if ((s_angle_started == 0U) || (last_rx == 0U) ||
         ((now - last_rx) > GIMBAL_ANGLE_GAP))
     {
@@ -165,10 +162,10 @@ static void gimbal_angle_track(void)
         return;
     }
 
-    /* ② 算"本帧转了多少" */
+    /* d=delta 本质是两次RAW之差，也就是编码器数据之差 */
     d = (int32_t)raw - (int32_t)g_yaw_angle_raw;
 
-    /* ③ ★回绕修正：1ms 内云台不可能真的转半圈以上 → 超过半圈的一定是回绕 */
+    /* 回绕修正，转满一圈发现d为负数时候直接加或减一个周期即可 */
     if (d >  GIMBAL_ENC_HALF) { d -= GIMBAL_ENC_RANGE; }
     if (d < -GIMBAL_ENC_HALF) { d += GIMBAL_ENC_RANGE; }
 
@@ -195,15 +192,15 @@ static void gimbal_imu_angle_update(void)
         return;
     }
 
-    g_yaw_imu_angle += g_imu_gyro_yaw * GIMBAL_IMU_DT;
+    g_yaw_imu_angle += g_imu_gyro_yaw * GIMBAL_IMU_DT;/* g_imu_gyro_yaw是陀螺仪的角速度，GIMBAL_IMU_DT是时间间隔 这一步是角速度积分得到角度*/
 
-    if (s_imu_ang_inited == 0U)     /* 首次：低通直接对齐，别从 0 慢慢爬 */
+    if (s_imu_ang_inited == 0U)     /* 首次：低通直接对齐，不从 0 慢慢爬 */
     {
         s_yaw_imu_lpf    = g_yaw_imu_angle;
         s_imu_ang_inited = 1U;
         return;
     }
-    s_yaw_imu_lpf += GIMBAL_IMU_LPF_ALPHA * (g_yaw_imu_angle - s_yaw_imu_lpf);
+    s_yaw_imu_lpf += GIMBAL_IMU_LPF_ALPHA * (g_yaw_imu_angle - s_yaw_imu_lpf);//一阶低通滤波公式
 }
 
 /* ============ 角度折回 [-PI, PI]（★对齐 ARBATOS，保命的一条）============
@@ -484,16 +481,17 @@ void gimbal_run(void)
 {
     float out;
 
-    gimbal_angle_track();               /* 5c-1：yaw 的连续多圈角度（本步不动） */
-    gimbal_imu_angle_update();          /* ★新增：陀螺积分角（外环反馈）*/
-
+    gimbal_angle_track();               /* 把6020的0-8191机械角度累加成连续多圈角*/
+    g_yaw_angle_deg = (float)g_yaw_angle_acc * (360.0f / 8192.0f);   /* 计数 → 度 */
+    gimbal_imu_angle_update();          /* 从 IMU 读角度数据，作为角度环的反馈。*/
+    s_yaw_imu_deg   = s_yaw_imu_lpf * 57.29578f;                     /* rad → 度 */
     /* ========== YAW（6020 @ CAN1）：角度环 ========== */
 #if (GIMBAL_RAW_TEST_ENABLE != 0U)
-    out = gimbal_yaw_control();
+    out = gimbal_yaw_control();//算YAW的命令值
 #else
     out = 0.0f;
 #endif
-    gimbal_send_yaw((int16_t)out);     /* ★YAW 恢复输出（由 ch0 控制） */
+    gimbal_send_yaw((int16_t)out);     /* 把YAW算出来的命令值发出去 */
 
     /* ========== PITCH（6623 @ CAN2）：角度环（闭环）========== */
 #if (GIMBAL_RAW_TEST_ENABLE != 0U)
@@ -501,5 +499,5 @@ void gimbal_run(void)
 #else
     out = 0.0f;
 #endif
-    gimbal_send_pitch((int16_t)out);
+    gimbal_send_pitch((int16_t)out);//同上
 }
