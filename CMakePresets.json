@@ -11,15 +11,24 @@
             }
         },
         {
+            "name": "chip",
+            "hidden": true,
+            "description": "换芯片只改这里两行（MCU_FLAGS / LD_FILE），工具链文件不用动",
+            "cacheVariables": {
+                "MCU_FLAGS": "-mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard",
+                "LD_FILE": "${sourceDir}/STM32F427XX_FLASH.ld"
+            }
+        },
+        {
             "name": "Debug",
-            "inherits": "default",
+            "inherits": ["default", "chip"],
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug"
             }
         },
         {
             "name": "Release",
-            "inherits": "default",
+            "inherits": ["default", "chip"],
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release"
             }

@@ -1,20 +1,28 @@
 {
-  "//": "NEW-INFANTRY-A（STM32F427IIHx）—— VSCode + CMake + Ninja + GCC + DAPLink 的最小配置",
-  "//1": "工具链用绝对路径写死，不依赖 PATH（VSCode 可能是在改 PATH 之前启动的）",
-  "//2": "原来那行 cmake.sourceDirectory 指向 Drivers/CMSIS/NN，是错的，已删掉",
-
-  "cmake.cmakePath": "D:/Cmake/bin/cmake.exe",
+  // 工程级配置：不含绝对路径、不含工程名，移动/复制/改名文件后无需修改本文件
+  // 工具链（gcc/gdb/openocd/cmake）路径统一放在用户级 settings.json
+  // 产物名统一为 firmware.elf（见 CMakeLists.txt 的 OUTPUT_NAME）
   "cmake.useCMakePresets": "always",
   "cmake.configureOnOpen": true,
   "cmake.configurePreset": "Debug",
   "cmake.buildPreset": "Debug",
 
+  // ★ 主来源：CMake 生成的编译数据库，随目录结构自动更新
   "C_Cpp.default.compileCommands": "${workspaceFolder}/build/Debug/compile_commands.json",
   "C_Cpp.default.intelliSenseMode": "windows-gcc-arm",
   "C_Cpp.default.cStandard": "c11",
 
-  "cortex-debug.armToolchainPath": "D:/ST/STM32CubeIDE_1.19.0/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.win32_1.0.0.202411081344/tools/bin",
-  "cortex-debug.openocdPath": "D:/ST/STM32CubeIDE_1.19.0/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.externaltools.openocd.win32_2.4.200.202505051030/tools/bin/openocd.exe",
+  // ★ 兜底：数据库缺失/过期时，递归通配符仍可解析任意层级的头文件
+  "C_Cpp.default.includePath": [
+    "${workspaceFolder}/USER/**",
+    "${workspaceFolder}/Core/Inc",
+    "${workspaceFolder}/Drivers/**"
+  ],
+  // ★ 索引范围覆盖整棵树：新增/移动子目录都不用改这里
+  "C_Cpp.default.browse.path": [
+    "${workspaceFolder}/USER",
+    "${workspaceFolder}/Core"
+  ],
 
   "files.associations": {
     "*.s": "asm",
@@ -22,11 +30,15 @@
     "*.ioc": "plaintext"
   },
   "files.exclude": {
-    "**/build": true,
-    "**/MDK-ARM/NEW-INFANTRY-A": true
+    "**/build/*": true
   },
   "search.exclude": {
     "**/build": true,
     "**/Drivers": true
+  },
+  "files.watcherExclude": {
+    "**/build/**": true,
+    "**/Drivers/**": true,
+    "**/.git/objects/**": true
   }
 }

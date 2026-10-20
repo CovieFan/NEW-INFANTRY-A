@@ -34,6 +34,10 @@ enable_language(C ASM)
 # Create an executable object type
 add_executable(${CMAKE_PROJECT_NAME})
 
+# 产物统一命名为 firmware.elf：让 .vscode 里的调试/烧录路径与工程名、文件夹名完全无关
+# （改这一行 = 以后复制/改名工程都不用再动 launch.json / tasks.json）
+set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME firmware)
+
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
 
@@ -43,30 +47,19 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 )
 
 # Add sources to executable
-target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user sources here
-    # 与 MDK-ARM\NEW-INFANTRY-A.uvprojx 里 Keil 编译的那 10 个 .c 一一对应
-    USER/application/chassis.c
-    USER/application/input.c
-    USER/bsp/bsp_buzzer.c
-    USER/bsp/bsp_can.c
-    USER/bsp/bsp_imu.c
-    USER/bsp/bsp_uart.c
-    USER/controller/pid.c
-    USER/device/gimbal.c
-    USER/device/motor.c
-    USER/device/remote.c
-)
+# ★ 自动收集 USER 下所有 .c（CONFIGURE_DEPENDS：增删/移动文件会自动重新配置）
+file(GLOB_RECURSE USER_SRC CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/USER/*.c)
+target_sources(${CMAKE_PROJECT_NAME} PRIVATE ${USER_SRC})
 
 # Add include paths
-target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user defined include paths
-    # 对应 Keil 的 ../USER/xxx 四条（USER/config 目录实际不存在，故不列）
-    USER/application
-    USER/bsp
-    USER/controller
-    USER/device
-)
+# ★ 每个含 .c 的目录都作为头文件搜索路径（改目录结构后不再需要手工维护）
+set(USER_INC_DIRS "")
+foreach(_src ${USER_SRC})
+    get_filename_component(_dir ${_src} DIRECTORY)
+    list(APPEND USER_INC_DIRS ${_dir})
+endforeach()
+list(REMOVE_DUPLICATES USER_INC_DIRS)
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${USER_INC_DIRS})
 
 # Add project symbols (macros)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE

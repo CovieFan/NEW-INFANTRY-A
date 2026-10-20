@@ -1,32 +1,49 @@
 {
+  // 无绝对路径、无工程名：复制/改名工程后可直接按 F5
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "调试 NEW-INFANTRY-A (DAPLink + OpenOCD)",
+      "name": "调试 Debug (DAPLink + OpenOCD)",
       "type": "cortex-debug",
       "request": "launch",
       "cwd": "${workspaceFolder}",
-      "executable": "${workspaceFolder}/build/Debug/NEW-INFANTRY-A.elf",
+      "executable": "${workspaceFolder}/build/Debug/firmware.elf",
       "servertype": "openocd",
-      "configFiles": ["${workspaceFolder}/openocd/cmsis-dap-f427.cfg"],
+      "configFiles": ["openocd/daplink.cfg"],
       "interface": "swd",
       "device": "STM32F427II",
-      "svdFile": "D:/ST/STM32CubeIDE_1.19.0/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.productdb.debug_2.2.200.202506131328/resources/cmsis/STMicroelectronics_CMSIS_SVD/STM32F427.svd",
+      "svdFile": "${workspaceFolder}/openocd/svd/STM32F427.svd",
       "runToEntryPoint": "main",
-      "preLaunchTask": "编译 NEW-INFANTRY-A (Debug)"
+      "liveWatch": { "enabled": true, "samplesPerSecond": 4 },
+      "preLaunchTask": "构建"
     },
     {
-      "name": "调试 · 停在复位向量 (DAPLink + OpenOCD)",
+      "name": "调试 · 停在复位向量 (Debug)",
       "type": "cortex-debug",
       "request": "launch",
       "cwd": "${workspaceFolder}",
-      "executable": "${workspaceFolder}/build/Debug/NEW-INFANTRY-A.elf",
+      "executable": "${workspaceFolder}/build/Debug/firmware.elf",
       "servertype": "openocd",
-      "configFiles": ["${workspaceFolder}/openocd/cmsis-dap-f427.cfg"],
+      "configFiles": ["openocd/daplink.cfg"],
       "interface": "swd",
       "device": "STM32F427II",
-      "svdFile": "D:/ST/STM32CubeIDE_1.19.0/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.productdb.debug_2.2.200.202506131328/resources/cmsis/STMicroelectronics_CMSIS_SVD/STM32F427.svd",
-      "preLaunchTask": "编译 NEW-INFANTRY-A (Debug)"
+      "svdFile": "${workspaceFolder}/openocd/svd/STM32F427.svd",
+      "liveWatch": { "enabled": true, "samplesPerSecond": 4 },
+      "preLaunchTask": "构建"
+    },
+    {
+      "name": "调试 Release (DAPLink + OpenOCD)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/Release/firmware.elf",
+      "servertype": "openocd",
+      "configFiles": ["openocd/daplink.cfg"],
+      "interface": "swd",
+      "device": "STM32F427II",
+      "svdFile": "${workspaceFolder}/openocd/svd/STM32F427.svd",
+      "runToEntryPoint": "main",
+      "preLaunchTask": "构建 (Release)"
     }
   ]
 }

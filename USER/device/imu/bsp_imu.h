@@ -9,14 +9,14 @@
 #include <stdint.h>
 
 /* 陀螺 Z 轴正方向修正：实测后填 +1.0f 或 -1.0f
-   判据：手动朝「g_yaw_angle_acc 增大」的方向转云台，
-        看 g_imu_gyro_z_raw 是正还是负；反了就填 -1.0f */
+   判据：手动朝「yaw_angle_acc 增大」的方向转云台，
+        看 imu_gyro_z_raw 是正还是负；反了就填 -1.0f */
 #define BSP_IMU_GYRO_Z_SIGN   (+1.0f)
 
-/* ▲上面这个宏已被「投影法」取代：现在只给诊断变量 g_imu_gyro_z 用，
+/* ▲上面这个宏已被「投影法」取代：现在只给诊断变量 imu_gyro_z 用，
    真正参与控制的是下面这个 YAW 符号 */
 /* ★真 yaw 轴角速度的符号修正：实测后填 +1.0f 或 -1.0f
-   判据：手转云台朝「g_yaw_angle_acc 增大」的方向，看 g_imu_gyro_yaw 是正是负 */
+   判据：手转云台朝「yaw_angle_acc 增大」的方向，看 imu_gyro_yaw 是正是负 */
 #define BSP_IMU_YAW_SIGN      (+1.0f)
 
 /* 重力方向低通系数：越小越稳、越慢跟上倾斜。0.002 在 ~3kHz 主循环下 ≈ 1Hz */
@@ -30,7 +30,7 @@
 /* ---- 上电静止零偏标定 ----
    为什么必须做：速控云台的反馈全是陀螺；零偏会让云台匀速自己转
    （实测零偏 ≈ -0.0053 rad/s = -0.3 °/s ⇒ 每 20 秒漂 6°）。 */
-#define BSP_IMU_CAL_MS        1000U   /* 上电后标定窗口长度(ms)；这段时间 g_imu_online 保持 0 */
+#define BSP_IMU_CAL_MS        1000U   /* 上电后标定窗口长度(ms)；这段时间 imu_online 保持 0 */
 #define BSP_IMU_CAL_MIN_CNT   500U    /* 窗口内至少采这么多帧才算标定成功，否则重来一轮 */
 
 /* ★2026-10-13 实测沉淀（EmberProbe 在线测得）：
@@ -46,28 +46,28 @@ void bsp_imu_init(void);      /* 上电调用一次：复位 + 自检 + 配置 *
 void bsp_imu_update(void);    /* 1kHz 调用一次：读一帧 + 在线判定 */
 
 /* ---- Watch 用 ---- */
-extern volatile float    g_imu_gyro_z;      /* 陀螺 Z 轴角速度 (rad/s)，已乘 SIGN */
-extern volatile int16_t  g_imu_gyro_z_raw;  /* 原始读数（定符号用）*/
-extern volatile int16_t  g_imu_gyro_x_raw;
-extern volatile int16_t  g_imu_gyro_y_raw;
+extern volatile float    imu_gyro_z;      /* 陀螺 Z 轴角速度 (rad/s)，已乘 SIGN */
+extern volatile int16_t  imu_gyro_z_raw;  /* 原始读数（定符号用）*/
+extern volatile int16_t  imu_gyro_x_raw;
+extern volatile int16_t  imu_gyro_y_raw;
 
-extern volatile int16_t  g_imu_acc_x_raw;   /* 加计原始值（只取方向，不需要单位）*/
-extern volatile int16_t  g_imu_acc_y_raw;
-extern volatile int16_t  g_imu_acc_z_raw;
-extern volatile float    g_imu_acc_norm;  /* ★加计三轴模长 |a| (LSB)：静止 ≈ 4096 */
-extern volatile float    g_imu_gyro_yaw;    /* ★投影后的真 yaw 角速度 (rad/s) */
-extern volatile float    g_imu_grav_ux;   /* ★重力方向单位向量（机体系），平方和 = 1 */
-extern volatile float    g_imu_grav_uy;
-extern volatile float    g_imu_grav_uz;
+extern volatile int16_t  imu_acc_x_raw;   /* 加计原始值（只取方向，不需要单位）*/
+extern volatile int16_t  imu_acc_y_raw;
+extern volatile int16_t  imu_acc_z_raw;
+extern volatile float    imu_acc_norm;  /* ★加计三轴模长 |a| (LSB)：静止 ≈ 4096 */
+extern volatile float    imu_gyro_yaw;    /* ★投影后的真 yaw 角速度 (rad/s) */
+extern volatile float    imu_grav_ux;   /* ★重力方向单位向量（机体系），平方和 = 1 */
+extern volatile float    imu_grav_uy;
+extern volatile float    imu_grav_uz;
 
 
-extern volatile uint8_t  g_imu_whoami;      /* 自检：应为 0x70 */
-extern volatile uint8_t  g_imu_online;      /* 1 = 20ms 内读到过 */
-extern volatile uint32_t g_imu_read_ok;     /* 成功帧数 */
-extern volatile uint32_t g_imu_read_fail;   /* 失败帧数 */
+extern volatile uint8_t  imu_whoami;      /* 自检：应为 0x70 */
+extern volatile uint8_t  imu_online;      /* 1 = 20ms 内读到过 */
+extern volatile uint32_t imu_read_ok;     /* 成功帧数 */
+extern volatile uint32_t imu_read_fail;   /* 失败帧数 */
 
-extern volatile float    g_imu_gyro_z_bias; /* 标定出的零偏 (rad/s) */
-extern volatile uint8_t  g_imu_cal_ok;      /* 1 = 零偏标定完成 */
-extern volatile uint32_t g_imu_cal_cnt;     /* 标定窗口内采到的帧数 */
+extern volatile float    imu_gyro_z_bias; /* 标定出的零偏 (rad/s) */
+extern volatile uint8_t  imu_cal_ok;      /* 1 = 零偏标定完成 */
+extern volatile uint32_t imu_cal_cnt;     /* 标定窗口内采到的帧数 */
 
 #endif

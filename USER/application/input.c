@@ -1,35 +1,30 @@
-/* input.c —— 输入抽象层（参数进表，代码只查表）
-   通道号 / 是否翻转 写在下面这张表里，应用层完全不知道。 */
 #include "input.h"
 #include "remote.h"
-
-/* ---- 参数表：角色 → {通道号, 是否翻符号}（对照 ARBATOS 的 .rc_ch / .invert）---- */
 typedef struct
 {
-    uint8_t ch;        /* 0~3；0xFF = 该角色不用 */
+    uint8_t chan_idx;                    /* 该角色用哪个物理通道（0~3） */
     uint8_t invert;    /* 1 = 把符号翻转 */
 } input_map_t;
 
-static const input_map_t s_input_map[INPUT_AXIS_COUNT] =
+static const input_map_t input_map[INPUT_AXIS_COUNT] =
 {
-    /* INPUT_AXIS_CHASSIS_X    */ { INPUT_CH_CHASSIS_X,    0U },
-    /* INPUT_AXIS_CHASSIS_Y    */ { INPUT_CH_CHASSIS_Y,    0U },
-    /* INPUT_AXIS_CHASSIS_WZ   */ { INPUT_CH_CHASSIS_WZ,   0U },
-    /* INPUT_AXIS_GIMBAL_YAW   */ { INPUT_CH_GIMBAL_YAW,   0U },
-    /* INPUT_AXIS_GIMBAL_PITCH */ { INPUT_CH_GIMBAL_PITCH, 0U },
+    { INPUT_CH_CHASSIS_X,    0U },
+    { INPUT_CH_CHASSIS_Y,    0U },
+    { INPUT_CH_CHASSIS_WZ,   0U },
+    { INPUT_CH_GIMBAL_YAW,   0U },
+    { INPUT_CH_GIMBAL_PITCH, 0U },
 };
 
-/* ---- 摇杆行程（实测标定）----
+/* 摇杆行程
    rc_full_pos[ch] = 通道 ch「读数为正」方向推到底的幅度
    rc_full_neg[ch] = 通道 ch「读数为负」方向推到底的幅度
-   正常轴两个方向都是 660（DJI：1684-1024）。
-   ⚠️ */
+   正常轴两个方向都是 660（DJI：1684-1024） */
 static const float rc_full_pos[4] = { 660.0f, 660.0f, 660.0f, 660.0f };
 static const float rc_full_neg[4] = { 660.0f, 660.0f, 660.0f, 660.0f };
 
-static int16_t input_read_ch(uint8_t ch)
+static int16_t input_read_ch(uint8_t chan_idx)
 {
-    switch (ch)
+    switch (chan_idx)
     {
         case 0U: return remote.ch0;
         case 1U: return remote.ch1;
@@ -39,39 +34,40 @@ static int16_t input_read_ch(uint8_t ch)
     }
 }
 
-float input_axis(uint8_t role)//axis=轴
+float input_axis(uint8_t axis_id)        
+/* 把通道值归一化 [-1, 1] */
+/*归一化 = 把不同范围的值，统一映射到同一个标准范围。*/
 {
-    const input_map_t *m;
-    int16_t ch;
-    float   v;
-    float   a;
-    float   fs;
+    const input_map_t *map;              /* 角色 -> 通道映射项 */
+    int16_t raw;                         /* 通道读数：约 -660 ~ +660，中位 0 */
+    float   raw_f;                       /* 读数转浮点 */
+    float   mag;                         /* |raw_f|，幅值 */
+    float   full_scale;                  /* 该通道"该方向"的满行程（现为 660） */
+    float   norm;                        /* 返回范围 [-1, 1] */
 
-    if (role >= INPUT_AXIS_COUNT) { return 0.0f; }
+    if (axis_id >= INPUT_AXIS_COUNT) { return 0.0f; }
+    map = &input_map[axis_id];
+    if (map->chan_idx > 3U) { return 0.0f; }   /* 越界保护*/
 
-    m = &s_input_map[role];
-    if (m->ch > 3U) { return 0.0f; }                   /* 0xFF = 该角色不用 */
+    raw   = input_read_ch(map->chan_idx);
+    raw_f = (float)raw;//转浮点
+    mag   = (raw_f < 0.0f) ? -raw_f : raw_f;//转绝对值
 
-    ch = input_read_ch(m->ch);
-    v  = (float)ch;
-    a  = (v < 0.0f) ? -v : v;
+    if (mag < (float)INPUT_DEADBAND) { return 0.0f; }   /* 死区内归零 */
 
-    if (a < (float)INPUT_DEADBAND) { return 0.0f; }     /* 死区内 -> 0 */
+    full_scale = (raw_f >= 0.0f) ? rc_full_pos[map->chan_idx] : rc_full_neg[map->chan_idx];
+    if (full_scale <= (float)INPUT_DEADBAND) { return 0.0f; }  /* 防除零 */
+    if (mag > full_scale) { mag = full_scale; }                /* 超量程削平 */
 
-    fs = (v >= 0.0f) ? rc_full_pos[m->ch] : rc_full_neg[m->ch];
-    if (fs <= (float)INPUT_DEADBAND) { return 0.0f; }   /* 防除零 */
-    if (a > fs) { a = fs; }                             /* 超量程 -> 削平 */
-
-    /* 死区外重映射：从死区边缘连续地长到 1（顺便修掉"刚出死区就跳"） */
-    a = (a - (float)INPUT_DEADBAND) / (fs - (float)INPUT_DEADBAND);
-    if (v < 0.0f)        { a = -a; }
-    if (m->invert != 0U) { a = -a; }
-    return a;
+    /* 死区外重映射：从死区边缘连续地长到 1（顺带修掉"刚出死区就跳"） */
+    norm = (mag - (float)INPUT_DEADBAND) / (full_scale - (float)INPUT_DEADBAND);
+    if (raw_f < 0.0f)      { norm = -norm; }
+    if (map->invert != 0U) { norm = -norm; }
+    return norm;
 }
 
-/* ---- 拨杆语义：拨杆中位 = 底盘自转开启 ----
-   ⚠️ 只在【明确读到 3】时才返回 1：
-      无效值（例如 0）或遥控掉线，一律当作"关" —— 失败方向偏安全 */
+
+/*拨杆中位 = 底盘自转开启*/
 uint8_t input_spin_on(void)
 {
     if (remote.online == 0U) { return 0U; }

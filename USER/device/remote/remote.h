@@ -24,9 +24,9 @@ extern volatile remote_t remote;
 
 
 /* 诊断变量：现象就看这几个 */
-extern volatile uint16_t g_rc_bytes;      /* 最近一帧的字节数（应为 18） */
-extern volatile uint32_t g_rc_frames;     /* 收到多少帧 */
-extern volatile uint32_t g_rc_err_cnt;    /* 串口错误次数 */
-extern volatile uint32_t g_rc_err_code;   /* 最近一次错误码 */
+extern volatile uint16_t rc_bytes;      /* 最近一帧的字节数（应为 18） */
+extern volatile uint32_t rc_frames;     /* 收到多少帧 */
+extern volatile uint32_t rc_err_cnt;    /* 串口错误次数 */
+extern volatile uint32_t rc_err_code;   /* 最近一次错误码 */
 
 #endif

@@ -403,7 +403,7 @@
 **格式**（⚠️ 文件位置**必须是可点击链接** —— 见第 7.2 节铁律 4）：
 
 ```
-[gimbal.c:176](file:///c%3A/Users/fan/Desktop/Robomaster%E8%B5%84%E6%96%99%E5%90%88%E9%9B%86/ProjectBymyselg/NEW-INFANTRY-A%20-%20%E5%89%AF%E6%9C%AC/USER/device/gimbal.c#L176)
+[gimbal.c:214](file:///c%3A/Users/fan/Desktop/Robomaster%E8%B5%84%E6%96%99%E5%90%88%E9%9B%86/ProjectBymyselg/NEW-INFANTRY-A%20-%20%E5%89%AF%E6%9C%AC/USER/application/gimbal/gimbal.c#L214)
 改前：#define GIMBAL_YAW_TGT_RATE  2.5f
 改后：#define GIMBAL_YAW_TGT_RATE  1.5f
 理由：<一行>
@@ -458,7 +458,7 @@
 **做法**：给 `file:///` 真链接（百分号编码 + `#L行号`）
 
 ```
-[gimbal.c:176](file:///c%3A/Users/fan/Desktop/Robomaster%E8%B5%84%E6%96%99%E5%90%88%E9%9B%86/ProjectBymyselg/NEW-INFANTRY-A%20-%20%E5%89%AF%E6%9C%AC/USER/device/gimbal.c#L176)
+[gimbal.c:214](file:///c%3A/Users/fan/Desktop/Robomaster%E8%B5%84%E6%96%99%E5%90%88%E9%9B%86/ProjectBymyselg/NEW-INFANTRY-A%20-%20%E5%89%AF%E6%9C%AC/USER/application/gimbal/gimbal.c#L214)
 ```
 
 **⛔ 违反判据（自查）**

@@ -3,14 +3,14 @@
 #include "main.h"
 
 /* ---------------- 诊断计数 ---------------- */
-volatile uint8_t  g_can1_ok          = 0U;
-volatile uint8_t  g_can2_ok          = 0U;
-volatile uint32_t g_can1_rx_cnt      = 0U;
-volatile uint32_t g_can2_rx_cnt      = 0U;
-volatile uint32_t g_can1_id_cnt[11]  = {0};
-volatile uint32_t g_can2_id_cnt[11]  = {0};
-volatile uint32_t g_can2_last_id     = 0U;
-volatile uint8_t  g_can2_last_data[8]= {0};
+volatile uint8_t  can1_ok          = 0U;
+volatile uint8_t  can2_ok          = 0U;
+volatile uint32_t can1_rx_cnt      = 0U;
+volatile uint32_t can2_rx_cnt      = 0U;
+volatile uint32_t can1_id_cnt[11]  = {0};
+volatile uint32_t can2_id_cnt[11]  = {0};
+volatile uint32_t can2_last_id     = 0U;
+volatile uint8_t  can2_last_data[8]= {0};
 
 /* ---------------- 接收者注册表 ---------------- */
 typedef struct
@@ -21,8 +21,8 @@ typedef struct
     bsp_can_rx_t handler;
 } bsp_can_slot_t;
 
-static bsp_can_slot_t s_slot[BSP_CAN_MAX_SLOT];
-static uint8_t        s_slot_cnt = 0U;
+static bsp_can_slot_t can_slot[BSP_CAN_MAX_SLOT];
+static uint8_t        slot_cnt = 0U;
 
 /* ---------------- 内部：配过滤器 ---------------- */
 static uint8_t can_config_filter(CAN_HandleTypeDef *hcan, uint32_t bank)
@@ -60,10 +60,10 @@ uint8_t bsp_can_init(void)
     if (can_config_filter(&hcan1,  0U) == 0U) { ok = 0U; }
     if (can_config_filter(&hcan2, 14U) == 0U) { ok = 0U; }
 
-    g_can1_ok = can_start(&hcan1);
-    g_can2_ok = can_start(&hcan2);
+    can1_ok = can_start(&hcan1);
+    can2_ok = can_start(&hcan2);
 
-    return (uint8_t)(ok & g_can1_ok & g_can2_ok);
+    return (uint8_t)(ok & can1_ok & can2_ok);
 }
 
 /* ---------------- 发送 ---------------- */
@@ -94,14 +94,47 @@ uint8_t bsp_can_register(uint8_t bus, uint32_t id_first, uint32_t id_last, bsp_c
     if (handler == 0)                              { return 0U; }
     if (id_first > id_last)                        { return 0U; }
     if ((bus != BSP_CAN_1) && (bus != BSP_CAN_2))  { return 0U; }
-    if (s_slot_cnt >= BSP_CAN_MAX_SLOT)            { return 0U; }//看一下表满了吗
+    if (slot_cnt >= BSP_CAN_MAX_SLOT)            { return 0U; }//看一下表满了吗
 
-    s_slot[s_slot_cnt].bus      = bus;
-    s_slot[s_slot_cnt].id_first = id_first;
-    s_slot[s_slot_cnt].id_last  = id_last;
-    s_slot[s_slot_cnt].handler  = handler;
-    s_slot_cnt++;
+    can_slot[slot_cnt].bus      = bus;
+    can_slot[slot_cnt].id_first = id_first;
+    can_slot[slot_cnt].id_last  = id_last;
+    can_slot[slot_cnt].handler  = handler;
+    slot_cnt++;
     return 1U;
+}
+
+/* ---------------- Step 0：Instance 表（与旧 slot 表并存） ---------------- */
+static can_instance_t inst[BSP_CAN_MAX_INSTANCE];
+static uint8_t        inst_cnt = 0U;
+
+can_instance_t *bsp_can_register_instance(const can_init_config_t *cfg)
+{
+    can_instance_t *self;
+
+    if (cfg == 0)                                            { return 0; }
+    if (cfg->rx_callback == 0)                               { return 0; }
+    if (cfg->rx_first > cfg->rx_last)                        { return 0; }
+    if ((cfg->bus != BSP_CAN_1) && (cfg->bus != BSP_CAN_2))  { return 0; }
+    if (inst_cnt >= BSP_CAN_MAX_INSTANCE)                  { return 0; }
+
+    self = &inst[inst_cnt++];
+    self->bus         = cfg->bus;
+    self->tx_id       = cfg->tx_id;
+    self->rx_first    = cfg->rx_first;
+    self->rx_last     = cfg->rx_last;
+    self->rx_callback = cfg->rx_callback;
+    self->owner       = cfg->owner;
+    self->rx_id       = 0U;
+    self->rx_len      = 0U;
+    self->rx_cnt      = 0U;
+    return self;
+}
+
+uint8_t bsp_can_transmit(can_instance_t *self, const uint8_t *data, uint8_t len)
+{
+    if (self == 0) { return 0U; }
+    return bsp_can_send_frame(self->bus, self->tx_id, data, len);
 }
 
 /* ---------------- 收到一帧：记账 + 分派（在中断里被调） ---------------- */
@@ -113,35 +146,51 @@ static void can_dispatch(uint8_t bus, uint32_t id, const uint8_t *data, uint16_t
     /* ① 记账 */
     if (bus == BSP_CAN_1)
     {
-        g_can1_rx_cnt++;
+        can1_rx_cnt++;
         if ((id >= 0x201U) && (id <= 0x20BU))
         {
             k = (uint16_t)(id - 0x201U);
-            g_can1_id_cnt[k]++;
+            can1_id_cnt[k]++;
         }
     }
     else
     {
-        g_can2_rx_cnt++;
+        can2_rx_cnt++;
         if ((id >= 0x201U) && (id <= 0x20BU))
         {
             k = (uint16_t)(id - 0x201U);
-            g_can2_id_cnt[k]++;
+            can2_id_cnt[k]++;
         }
-        g_can2_last_id = id;
+        can2_last_id = id;
         for (i = 0U; i < 8U; i++)
         {
-            g_can2_last_data[i] = (i < len) ? data[i] : 0U;
+            can2_last_data[i] = (i < len) ? data[i] : 0U;
         }
     }
 
     /* ② 分派：谁的 ID 段匹配就给谁 */
-    for (i = 0U; i < s_slot_cnt; i++)
+    for (i = 0U; i < slot_cnt; i++)
     {
-        if (s_slot[i].bus != bus)     { continue; }
-        if (id < s_slot[i].id_first)  { continue; }
-        if (id > s_slot[i].id_last)   { continue; }
-        s_slot[i].handler(id, data, len);
+        if (can_slot[i].bus != bus)     { continue; }
+        if (id < can_slot[i].id_first)  { continue; }
+        if (id > can_slot[i].id_last)   { continue; }
+        can_slot[i].handler(id, data, len);
+    }
+
+    /* ③ Instance 分派：先填最近一帧，再回调拥有者 */
+    for (i = 0U; i < inst_cnt; i++)
+    {
+        can_instance_t *ins = &inst[i];
+
+        if (ins->bus != bus)    { continue; }
+        if (id < ins->rx_first) { continue; }
+        if (id > ins->rx_last)  { continue; }
+
+        ins->rx_id  = id;
+        ins->rx_len = len;
+        for (k = 0U; k < 8U; k++) { ins->rx_data[k] = (k < len) ? data[k] : 0U; }
+        ins->rx_cnt++;
+        ins->rx_callback(ins);
     }
 }
 
