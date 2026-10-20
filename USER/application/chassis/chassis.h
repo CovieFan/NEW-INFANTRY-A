@@ -2,19 +2,21 @@
 #define CHASSIS_H
 #include <stdint.h>
 
-#define CHASSIS_FWD_CUR     2500
-#define CHASSIS_STRAFE_CUR  2500
-#define CHASSIS_SPIN_CUR    2500
-#define CHASSIS_CUR_MAX     4500
+typedef struct
+{
+    int16_t fwd_cur;
+    int16_t strafe_cur;
+    int16_t spin_cur;
+    int16_t cur_max;
+    float   spin_fixed_rpm;
 
-#define CHASSIS_PID_MAX_RPM  3000.0f
-#define CHASSIS_PID_KP       15.0f
-#define CHASSIS_PID_KI       0.0f
-#define CHASSIS_PID_KD       0.0f
-#define CHASSIS_PID_OUT_LIM  3000.0f
-#define CHASSIS_PID_INT_LIM  3000.0f
-
-#define CHASSIS_SPIN_FIXED_RPM  1000.0f
+    float   max_rpm;
+    float   kp;
+    float   ki;
+    float   kd;
+    float   out_lim;
+    float   int_lim;
+} chassis_cfg_t;
 
 typedef enum
 {
@@ -23,6 +25,7 @@ typedef enum
     CHASSIS_MODE_PID_TEST
 } chassis_mode_e;
 
+extern volatile chassis_cfg_t  chassis_cfg;
 extern volatile chassis_mode_e chassis_mode;
 
 void chassis_run(void);

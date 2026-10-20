@@ -1,25 +1,24 @@
-/* ============================================================
- * chassis.c —— 底盘应用层
- * 职责：把"车该往哪走"变成 4 个轮子的电流。
- * 现状：4d 遥控开环 + 4c-1 单轮闭环测试
- * ============================================================ */
+/* chassis.c —— 底盘应用层：摇杆 → 四轮电流 */
 #include "chassis.h"
 #include "motor.h"
-#include "main.h"                       /* HAL_GetTick() */
+#include "main.h"                      
 #include "remote.h"
 #include "pid.h"
 #include "input.h"
-/* ★ 4a 实测结果：下标 0~3 = 0x201 FR / 0x202 FL / 0x203 RL / 0x204 RR */
-/*   +1 = 该轮给正电流时是"往前转"（左右镜像安装） */
+/* 下标 0~3 = 0x201 FR / 0x202 FL / 0x203 RL / 0x204 RR（实测） */
+/* +1 = 正电流对应前进（左右镜像安装） */
 const int8_t motor_dir[4] = { +1, -1, -1, +1 };
 
 volatile int16_t dbg_cur[4] = { 0, 0, 0, 0 };
 volatile chassis_mode_e chassis_mode = CHASSIS_MODE_PID_TEST;
+volatile chassis_cfg_t chassis_cfg =
+{
+    .fwd_cur = 2500, .strafe_cur = 2500, .spin_cur = 2500, .cur_max = 4500,
+    .spin_fixed_rpm = 1000.0f,
+    .max_rpm = 3000.0f, .kp = 15.0f, .ki = 0.0f, .kd = 0.0f,
+    .out_lim = 3000.0f, .int_lim = 3000.0f,
+};
 
-/* ================= 4d 遥控开环控制 ================= */
-
-
-/* 给 Watch / 串口看的调试量 */
 volatile float   dbg_vx  = 0.0f;
 volatile float   dbg_vy  = 0.0f;
 volatile float   dbg_wz  = 0.0f;
@@ -34,7 +33,7 @@ static void chassis_rc_run(void)
     int16_t cur[4] = { 0, 0, 0, 0 };
     uint8_t i;
 
-    /* ① ★最重要的一行：遥控掉线 -> 立刻全 0 电流 */
+    /* 掉线 -> 立即全 0 电流 */
     if (remote.online == 0U)
     {
         dbg_vx = 0.0f; dbg_vy = 0.0f; dbg_wz = 0.0f;
@@ -43,29 +42,27 @@ static void chassis_rc_run(void)
         return;
     }
 
-    /* ② 摇杆 -> 三个"意图电流" */
-    vx = input_axis(INPUT_AXIS_CHASSIS_X) * (float)CHASSIS_FWD_CUR;
-    vy = input_axis(INPUT_AXIS_CHASSIS_Y) * (float)CHASSIS_STRAFE_CUR;
-    wz = input_axis(INPUT_AXIS_CHASSIS_WZ) * (float)CHASSIS_SPIN_CUR;
+    vx = input_axis(INPUT_AXIS_CHASSIS_X) * (float)chassis_cfg.fwd_cur;
+    vy = input_axis(INPUT_AXIS_CHASSIS_Y) * (float)chassis_cfg.strafe_cur;
+    wz = input_axis(INPUT_AXIS_CHASSIS_WZ) * (float)chassis_cfg.spin_cur;
 
     dbg_vx = vx; dbg_vy = vy; dbg_wz = wz;
 
-    /* ③ 逆运动学（麦轮标准式，下标 0~3 = FR, FL, RL, RR）
-          自转部分的符号已被 4a-2 实测确认过：左转 = 右侧+、左侧-  */
+    /* 麦轮逆运动学：0~3 = FR/FL/RL/RR
+   自转符号已实测 */
     wf[0] = vx + vy + wz;    /* FR */
     wf[1] = vx - vy - wz;    /* FL */
     wf[2] = vx + vy - wz;    /* RL */
     wf[3] = vx - vy + wz;    /* RR */
 
-    /* ④ 硬限幅 + 方向修正 + 单轮掉线保护 */
     for (i = 0U; i < 4U; i++)
     {
         float c = wf[i];
 
-        if (c >  (float)CHASSIS_CUR_MAX) { c =  (float)CHASSIS_CUR_MAX; }
-        if (c < -(float)CHASSIS_CUR_MAX) { c = -(float)CHASSIS_CUR_MAX; }
+        if (c >  (float)chassis_cfg.cur_max) { c =  (float)chassis_cfg.cur_max; }
+        if (c < -(float)chassis_cfg.cur_max) { c = -(float)chassis_cfg.cur_max; }
 
-        /* 该轮电调从没上线过 -> 不给电流（保护一个轮子死了还猛给的情况） */
+        /* 该轮从未上线 -> 不给电流 */
         if (motor_chassis[i].fb.online == 0U) { c = 0.0f; }
         if ((motor_chassis[i].fb.last_ms == 0U) ||((HAL_GetTick() - motor_chassis[i].fb.last_ms) > 100U))
         {
@@ -76,14 +73,11 @@ static void chassis_rc_run(void)
         dbg_cur[i] = cur[i];
     }
 
-    /* ⑤ 发出去。TIM6 已经给了 1kHz 节拍，这里不用再自己限速 */
+    /* TIM6 已给 1kHz 节拍，这里不再限速 */
     motor_chassis_send_current(cur);
 }
 
 
-
-
-/* ================= 4c-2 四轮转速闭环（遥控驱动） ================= */
 
 volatile float   pid_tar[4] = { 0, 0, 0, 0 };   /* Watch：四轮目标（前进为正）*/
 volatile float   pid_fb [4] = { 0, 0, 0, 0 };   /* Watch：四轮反馈（前进为正）*/
@@ -104,17 +98,26 @@ static void chassis_pid_run(void)
     float   scale  = 1.0f;
     uint8_t i;
 
-    if (pid_ok == 0U)                            /* 只初始化一次 */
+    if (pid_ok == 0U)
     {
         for (i = 0U; i < 4U; i++)
         {
-            pid_init(&chassis_pid[i], CHASSIS_PID_KP, CHASSIS_PID_KI, CHASSIS_PID_KD,
-                     CHASSIS_PID_OUT_LIM, CHASSIS_PID_INT_LIM);
+            pid_init(&chassis_pid[i], chassis_cfg.kp, chassis_cfg.ki, chassis_cfg.kd,
+                     chassis_cfg.out_lim, chassis_cfg.int_lim);
         }
         pid_ok = 1U;
     }
 
-    /* ① 遥控掉线 -> 目标全 0 + 清 PID（不然积分/状态会留残渣） */
+    for (i = 0U; i < 4U; i++)
+    {
+        chassis_pid[i].kp             = chassis_cfg.kp;
+        chassis_pid[i].ki             = chassis_cfg.ki;
+        chassis_pid[i].kd             = chassis_cfg.kd;
+        chassis_pid[i].output_limit   = chassis_cfg.out_lim;
+        chassis_pid[i].integral_limit = chassis_cfg.int_lim;
+    }
+
+    /* 掉线 -> 目标清零 + PID 复位，防积分残留 */
     if (remote.online == 0U)
     {
         for (i = 0U; i < 4U; i++)
@@ -129,33 +132,31 @@ static void chassis_pid_run(void)
         return;
     }
 
-    /* ② 摇杆 -> 三个"意图转速"（单位：转子 rpm，前进为正）*/
-    vx = input_axis(INPUT_AXIS_CHASSIS_X) * CHASSIS_PID_MAX_RPM;
-    vy = input_axis(INPUT_AXIS_CHASSIS_Y) * CHASSIS_PID_MAX_RPM;
+    /* 摇杆 -> 目标转速（转子 rpm，前进为正） */
+    vx = input_axis(INPUT_AXIS_CHASSIS_X) * chassis_cfg.max_rpm;
+    vy = input_axis(INPUT_AXIS_CHASSIS_Y) * chassis_cfg.max_rpm;
     /* ★自转不再读摇杆：由拨杆中位决定（ch0 让给云台 yaw） */
-    wz = (input_spin_on() != 0U) ? CHASSIS_SPIN_FIXED_RPM : 0.0f;
+    wz = (input_spin_on() != 0U) ? chassis_cfg.spin_fixed_rpm : 0.0f;
 
-    /* ③ 逆运动学 -> 四轮目标转速（下标 0~3 = FR, FL, RL, RR）*/
+    /* 逆运动学 -> 四轮目标（0~3 = FR/FL/RL/RR） */
     tgt[0] = vx + vy + wz;    /* FR */
     tgt[1] = vx - vy - wz;    /* FL */
     tgt[2] = vx + vy - wz;    /* RL */
     tgt[3] = vx - vy + wz;    /* RR */
 
-    /* ④ ★等比缩放：超了就四轮一起缩 —— 保持运动方向不变
-          （逐轮独立限幅会把方向扭歪，所以必须整体缩） */
+    /* 超速时四轮等比缩放：逐轮独立限幅会把方向扭歪 */
     for (i = 0U; i < 4U; i++)
     {
         float a = (tgt[i] < 0.0f) ? -tgt[i] : tgt[i];
         if (a > maxabs) { maxabs = a; }
     }
-    if (maxabs > CHASSIS_PID_MAX_RPM)
+    if (maxabs > chassis_cfg.max_rpm)
     {
-        scale = CHASSIS_PID_MAX_RPM / maxabs;
+        scale = chassis_cfg.max_rpm / maxabs;
         for (i = 0U; i < 4U; i++) { tgt[i] *= scale; }
     }
     pid_scale = scale;
 
-    /* ⑤ 四轮 PID */
     for (i = 0U; i < 4U; i++)
     {
         float fb = (float)motor_chassis[i].fb.speed_rpm * (float)motor_dir[i];  /* 前进为正 */
@@ -181,8 +182,6 @@ static void chassis_pid_run(void)
 }
 
 
-
-/* ---------------- 对外唯一入口！！！！！！！！！！！！！ ---------------- */
 void chassis_run(void)
 {
     remote_update();
