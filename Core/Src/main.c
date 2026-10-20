@@ -180,7 +180,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     if (htim->Instance != TIM6) { return; }   /* TIM12 是蜂鸣器 PWM，不管 */
     remote_update();//判断遥控器是否在线
 
-    //chassis_run();                            /* ← 1kHz 控制节拍跑在这里 */
+    chassis_run();                            /* ← 1kHz 控制节拍跑在这里 */
     gimbal_run(); 
 }
 /* USER CODE END 4 */

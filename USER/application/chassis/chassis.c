@@ -14,9 +14,9 @@
 const int8_t motor_dir[4] = { +1, -1, -1, +1 };
 
 volatile int16_t dbg_cur[4] = { 0, 0, 0, 0 };
+volatile chassis_mode_e chassis_mode = CHASSIS_MODE_PID_TEST;
 
 /* ================= 4d 遥控开环控制 ================= */
-#if (CHASSIS_RC_ENABLE != 0U)
 
 
 /* 给 Watch / 串口看的调试量 */
@@ -39,7 +39,7 @@ static void chassis_rc_run(void)
     {
         dbg_vx = 0.0f; dbg_vy = 0.0f; dbg_wz = 0.0f;
         for (i = 0U; i < 4U; i++) { dbg_cur[i] = 0; }
-        motor_send_current(zero);
+        motor_chassis_send_current(zero);
         return;
     }
 
@@ -77,15 +77,13 @@ static void chassis_rc_run(void)
     }
 
     /* ⑤ 发出去。TIM6 已经给了 1kHz 节拍，这里不用再自己限速 */
-    motor_send_current(cur);
+    motor_chassis_send_current(cur);
 }
-#endif /* CHASSIS_RC_ENABLE */
 
 
 
 
 /* ================= 4c-2 四轮转速闭环（遥控驱动） ================= */
-#if (CHASSIS_PID_TEST != 0U)
 
 volatile float   pid_tar[4] = { 0, 0, 0, 0 };   /* Watch：四轮目标（前进为正）*/
 volatile float   pid_fb [4] = { 0, 0, 0, 0 };   /* Watch：四轮反馈（前进为正）*/
@@ -127,7 +125,7 @@ static void chassis_pid_run(void)
             dbg_cur[i] = 0;
         }
         pid_scale = 0.0f;
-        motor_send_current(zero);
+        motor_chassis_send_current(zero);
         return;
     }
 
@@ -179,27 +177,27 @@ static void chassis_pid_run(void)
         dbg_cur[i] = cur[i];
     }
 
-    motor_send_current(cur);
+    motor_chassis_send_current(cur);
 }
 
-#endif /* CHASSIS_PID_TEST */
 
 
 /* ---------------- 对外唯一入口！！！！！！！！！！！！！ ---------------- */
 void chassis_run(void)
 {
-    remote_update();                 /* 1kHz 里顺手判遥控在线 */
+    remote_update();
 
-#if (CHASSIS_PID_TEST != 0U)
-    chassis_pid_run();          /* 4c-1：单轮闭环（优先于遥控） */
-    return;
-#endif
+    switch (chassis_mode)
+    {
+    case CHASSIS_MODE_RC:
+        chassis_rc_run();
+        break;
 
-#if (CHASSIS_RC_ENABLE != 0U)
-    chassis_rc_run();
-    return;
-#endif
-    /* 两个开关都关着 -> 什么都不做（安全默认） */
+    case CHASSIS_MODE_PID_TEST:
+        chassis_pid_run();
+        break;
+
+    default:
+        break;
+    }
 }
-
-

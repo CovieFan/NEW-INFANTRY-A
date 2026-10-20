@@ -39,6 +39,18 @@
       "problemMatcher": ["$gcc"]
     },
     {
+      "label": "烧录前自检",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-Command",
+        "$e = Get-Item 'build/Debug/firmware.elf' -ErrorAction Stop; $n = @(Get-ChildItem USER,Core -Recurse -Include *.c,*.h | Where-Object { $_.LastWriteTime -gt $e.LastWriteTime }).Count; if ($n -gt 0) { throw \"有 $n 个源文件比 ELF 新，请先构建\" }; Write-Host \"烧录目标: $($e.FullName)\"; Write-Host \"ELF 时间: $($e.LastWriteTime)\""
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
       "label": "烧录 (Debug)",
       "type": "shell",
       "command": "${config:cortex-debug.openocdPath}",
@@ -47,7 +59,8 @@
         "-c", "program build/Debug/firmware.elf verify reset exit"
       ],
       "options": { "cwd": "${workspaceFolder}" },
-      "dependsOn": "构建",
+      "dependsOn": ["构建", "烧录前自检"],
+      "dependsOrder": "sequence",
       "problemMatcher": []
     },
     {
