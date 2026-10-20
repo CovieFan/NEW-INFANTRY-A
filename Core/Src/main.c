@@ -108,7 +108,8 @@ int main(void)
   bsp_buzzer_init();  
   bsp_buzzer_beep(200);            /* 上电"滴"一声 = 烧录成功 */
   bsp_imu_init();                  /* ← 新增：MPU6500 自检 + 配置 */
-  motor_init();                    /* ← 新增：注册电机反馈回调 */
+  motor_chassis_init();
+  motor_gimbal_init();
   bsp_can_init();                  //先注册，后Start
   remote_init();
   HAL_TIM_Base_Start_IT(&htim6);   /* ← 新增：启动 1kHz 控制节拍 */

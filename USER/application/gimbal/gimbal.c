@@ -28,10 +28,10 @@ static uint8_t  angle_started  = 0U;
 static void gimbal_angle_track(void)//云台编码器反馈值累积
 /*加了一堆保护，本质其实就是把d累加到g_yaw_angle_acc，其中d本质是delta，是两次RAW之差*/
 {
-    int16_t  raw = motor_gimbal_fb[GIMBAL_AXIS_YAW].angle;
+    int16_t  raw = motor_gimbal[GIMBAL_AXIS_YAW].fb.angle;
     int32_t  d;
     uint32_t now = HAL_GetTick();
-    uint32_t last_rx = motor_gimbal_fb[GIMBAL_AXIS_YAW].last_ms;   /* ★电机反馈帧自己的时间戳 */
+    uint32_t last_rx = motor_gimbal[GIMBAL_AXIS_YAW].fb.last_ms;   /* ★电机反馈帧自己的时间戳 */
 
     if (last_rx == 0U)/*还没收到反馈，啥也不干*/
     {
@@ -228,14 +228,14 @@ static float gimbal_yaw_control(void)
    基准 = 固定的"水平值"：上电时云台在任意位置，都会自己往水平靠。
    ⚠️ 实测：往下 angle 减小 / 往上 angle 增大 ⇒ 不取反（正命令 = 往上） */
 
-#define GIMBAL_PITCH_LEVEL      6000    /* ★实测：云台水平时 motor_gimbal_fb[1].angle 的值 */
+#define GIMBAL_PITCH_LEVEL      6000    /* ★实测：云台水平时 motor_gimbal[1].fb.angle 的值 */
 #define GIMBAL_PITCH_ENC_RANGE  8192L   /* 13 位编码器 */
 #define GIMBAL_PITCH_ENC_HALF   4096L   /* 半圈，用于回绕修正 */
 
 #define GIMBAL_PITCH_KP         12.0f    /* ★先保守；err 单位 = 编码器计数 */
 #define GIMBAL_PITCH_KI         0.01f    /* 先纯 P；pitch 有重力，最后要加（见上面表格） */
 #define GIMBAL_PITCH_KD         0.0f
-#define GIMBAL_PITCH_OUT_LIM    2000.0f /* ★必须 = GIMBAL_PITCH_CMD_MAX（手册量程 ±5000） */
+#define GIMBAL_PITCH_OUT_LIM    2000.0f /* 必须等于 motor.c 的 gimbal_cfg[1].out_max */
 #define GIMBAL_PITCH_INT_LIM    200000.0f    /* KI=0 用不上；加 KI 时改 200000.0f */
 
 #define GIMBAL_PITCH_TGT_RATE   2.0f    /* 满杆目标角速度 = 2000 计数/秒（≈88°/s） */
@@ -258,7 +258,7 @@ static uint8_t pitch_ready = 0U;
    为什么要有回绕修正：万一 angle 从 0 跳到 8191，直接相减会得到 ±8192 的假误差 */
 static float gimbal_pitch_fb(void)
 {
-    int32_t d = (int32_t)motor_gimbal_fb[GIMBAL_AXIS_PITCH].angle - (int32_t)GIMBAL_PITCH_LEVEL;
+    int32_t d = (int32_t)motor_gimbal[GIMBAL_AXIS_PITCH].fb.angle - (int32_t)GIMBAL_PITCH_LEVEL;
 
     if (d >  GIMBAL_PITCH_ENC_HALF) { d -= GIMBAL_PITCH_ENC_RANGE; }
     if (d < -GIMBAL_PITCH_ENC_HALF) { d += GIMBAL_PITCH_ENC_RANGE; }

@@ -66,8 +66,8 @@ static void chassis_rc_run(void)
         if (c < -(float)CHASSIS_CUR_MAX) { c = -(float)CHASSIS_CUR_MAX; }
 
         /* 该轮电调从没上线过 -> 不给电流（保护一个轮子死了还猛给的情况） */
-        if (motor_std_fb[i].online == 0U) { c = 0.0f; }
-        if ((motor_std_fb[i].last_ms == 0U) ||((HAL_GetTick() - motor_std_fb[i].last_ms) > 100U))
+        if (motor_chassis[i].fb.online == 0U) { c = 0.0f; }
+        if ((motor_chassis[i].fb.last_ms == 0U) ||((HAL_GetTick() - motor_chassis[i].fb.last_ms) > 100U))
         {
             c = 0.0f;
         }
@@ -123,7 +123,7 @@ static void chassis_pid_run(void)
         {
             pid_reset(&chassis_pid[i]);
             pid_tar[i] = 0.0f;
-            pid_fb [i] = (float)motor_std_fb[i].speed_rpm * (float)motor_dir[i];
+            pid_fb [i] = (float)motor_chassis[i].fb.speed_rpm * (float)motor_dir[i];
             dbg_cur[i] = 0;
         }
         pid_scale = 0.0f;
@@ -160,14 +160,14 @@ static void chassis_pid_run(void)
     /* ⑤ 四轮 PID */
     for (i = 0U; i < 4U; i++)
     {
-        float fb = (float)motor_std_fb[i].speed_rpm * (float)motor_dir[i];  /* 前进为正 */
+        float fb = (float)motor_chassis[i].fb.speed_rpm * (float)motor_dir[i];  /* 前进为正 */
 
         pid_tar[i] = tgt[i];
         pid_fb [i] = fb;
 
         /* 电调掉线 -> 清 PID + 不给电流 */
-        if ((motor_std_fb[i].last_ms == 0U) ||
-            ((HAL_GetTick() - motor_std_fb[i].last_ms) > 100U))
+        if ((motor_chassis[i].fb.last_ms == 0U) ||
+            ((HAL_GetTick() - motor_chassis[i].fb.last_ms) > 100U))
         {
             pid_reset(&chassis_pid[i]);
             cur[i]       = 0;
