@@ -184,8 +184,6 @@ static void chassis_pid_run(void)
 
 void chassis_run(void)
 {
-    remote_update();
-
     switch (chassis_mode)
     {
     case CHASSIS_MODE_RC:
