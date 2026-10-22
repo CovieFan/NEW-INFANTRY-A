@@ -15,7 +15,6 @@ typedef struct
     float   w_ref_lim;     /* 期望角速度限幅 (rad/s) */
     float   int_lim;       /* 角度环积分限幅 */
     float   tgt_rate;      /* 位控：摇杆积分速率 (rad/tick) */
-    float   tgt_limit;     /* 位控：目标角度软限位 (rad) */
     float   out_lim;       /* 输出限幅（0x1FF 量程 +-25000） */
 } gimbal_yaw_cfg_t;
 
@@ -32,7 +31,7 @@ typedef struct
 
 typedef struct
 {
-    uint8_t enable;        /* 云台总开关：1 = 正常输出；0 = 强制 0 */
+    uint8_t enable;      
     gimbal_yaw_cfg_t   yaw;
     gimbal_pitch_cfg_t pitch;
 } gimbal_cfg_t;
