@@ -177,10 +177,9 @@ void SystemClock_Config(void)
 /* USER CODE BEGIN 4 */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-    if (htim->Instance != TIM6) { return; }   /* TIM12 是蜂鸣器 PWM，不管 */
+    if (htim->Instance != TIM6) { return; } 
     remote_update();//判断遥控器是否在线
-
-    chassis_run();                            /* ← 1kHz 控制节拍跑在这里 */
+    chassis_run();                            
     gimbal_run(); 
 }
 /* USER CODE END 4 */

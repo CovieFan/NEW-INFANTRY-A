@@ -11,7 +11,7 @@ static const input_map_t input_map[INPUT_AXIS_COUNT] =
     { INPUT_CH_CHASSIS_X,    0U },
     { INPUT_CH_CHASSIS_Y,    0U },
     { INPUT_CH_CHASSIS_WZ,   0U },
-    { INPUT_CH_GIMBAL_YAW,   0U },
+    { INPUT_CH_GIMBAL_YAW,   1U }, /* 右杆横向反相：左推 -> YAW 左转 */
     { INPUT_CH_GIMBAL_PITCH, 0U },
 };
 

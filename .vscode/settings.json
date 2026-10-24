@@ -40,5 +40,6 @@
     "**/build/**": true,
     "**/Drivers/**": true,
     "**/.git/objects/**": true
-  }
+  },
+  "emberprobe.sampleFrequencyHz": 30
 }
