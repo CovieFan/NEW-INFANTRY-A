@@ -42,8 +42,17 @@ typedef enum
     CHASSIS_MODE_PID_TEST
 } chassis_mode_e;
 
+/* 参数/计算异常诊断；其余许可仍看遥控、回正状态、反馈和wait_neutral。 */
+typedef enum
+{
+    CHASSIS_CONTROL_FAULT_NONE = 0,
+    CHASSIS_CONTROL_FAULT_CONFIG,
+    CHASSIS_CONTROL_FAULT_NUMERIC
+} chassis_control_fault_e;
+
 extern volatile chassis_cfg_t  chassis_cfg;
 extern volatile chassis_mode_e chassis_mode;
+extern volatile chassis_control_fault_e chassis_control_fault;
 
 /* Watch：相对角左转为正，单位 rad；valid=0 时不得用于坐标转换。 */
 extern volatile float    chassis_yaw_rel_rad;

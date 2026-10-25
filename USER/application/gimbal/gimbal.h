@@ -18,14 +18,15 @@ typedef enum
     GIMBAL_YAW_HOME_FAULT_TIMEOUT
 } gimbal_yaw_home_fault_e;
 
-/* Watch 位图；PITCH 的 IMU 位仅指上电静止标定未完成。 */
+/* Watch 位图；PITCH 的 IMU 位表示IMU启动流程尚未结束。 */
 typedef enum
 {
     GIMBAL_INHIBIT_DISABLED  = 1U,
     GIMBAL_INHIBIT_REMOTE    = 2U,
     GIMBAL_INHIBIT_IMU       = 4U,
     GIMBAL_INHIBIT_FEEDBACK  = 8U,
-    GIMBAL_INHIBIT_NONFINITE = 16U
+    GIMBAL_INHIBIT_NONFINITE = 16U, /* 非有限值或超出宽松数值状态边界 */
+    GIMBAL_INHIBIT_CONFIG   = 32U
 } gimbal_inhibit_e;
 
 typedef struct

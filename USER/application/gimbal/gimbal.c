@@ -7,6 +7,7 @@
 #include "bsp_imu.h"  
 #include "chassis.h"  /* 共用已标定的车头零位/方向，不另存一份 5500 */
 #include <math.h>
+#include <limits.h>
 
 #define GIMBAL_ENC_RANGE   8192L    /* 13 位编码器：0~8191 */
 #define GIMBAL_ENC_HALF    4096L    /* 半圈，用来判"是否发生回绕" */
@@ -58,22 +59,78 @@ static void gimbal_angle_track(void)//云台编码器反馈值累积
 
 #define GIMBAL_IMU_DT        0.001f//积分步长，是由TIM6 1KHz决定的，每秒一千次
 #define GIMBAL_IMU_LPF_ALPHA 0.377f//一阶低通滤波系数alpha
+#define GIMBAL_PI            3.14159265358979f
+/* 宽松数值保护边界，不是电机物理能力或PID稳定边界；日常参数仍在gimbal_cfg。 */
+#define GIMBAL_GAIN_MAX      1000000.0f
+#define GIMBAL_INTEGRAL_MAX  1000000000.0f
+#define GIMBAL_COMMAND_MAX   ((float)INT16_MAX)
+#define GIMBAL_SPEED_MAX     (GIMBAL_PI / GIMBAL_IMU_DT)
+#define GIMBAL_ANGLE_STATE_MAX 1000000.0f /* 数值损坏保护，不是机械软限位。 */
 
-static void gimbal_imu_angle_update(void)//陀螺仪角度积分
+static uint8_t gimbal_range_valid(float value, float low, float high)
 {
+    return (uint8_t)(isfinite(value) && (value >= low) && (value <= high));
+}
 
-    if ((imu_online == 0U) || !isfinite(imu_gyro_yaw)) { return; }
+static uint8_t gimbal_yaw_config_valid(const gimbal_yaw_cfg_t *cfg)
+{
+    return (uint8_t)((cfg->speed_mode <= 1U) && (cfg->omega_ff_en <= 1U) &&
+        gimbal_range_valid(cfg->kp_w, 0.0f, GIMBAL_GAIN_MAX) &&
+        gimbal_range_valid(cfg->kick, 0.0f, GIMBAL_COMMAND_MAX) &&
+        gimbal_range_valid(cfg->speed_max, 0.0f, GIMBAL_SPEED_MAX) &&
+        gimbal_range_valid(cfg->kp_ang, 0.0f, GIMBAL_GAIN_MAX) &&
+        gimbal_range_valid(cfg->ki_ang, 0.0f, GIMBAL_GAIN_MAX) &&
+        gimbal_range_valid(cfg->w_ref_lim, 0.0f, GIMBAL_SPEED_MAX) && (cfg->w_ref_lim > 0.0f) &&
+        gimbal_range_valid(cfg->int_lim, 0.0f, GIMBAL_INTEGRAL_MAX) &&
+        gimbal_range_valid(cfg->tgt_rate, 0.0f, GIMBAL_PI) &&
+        gimbal_range_valid(cfg->out_lim, 0.0f, GIMBAL_COMMAND_MAX) && (cfg->out_lim > 0.0f));
+}
 
-    yaw_imu_angle += imu_gyro_yaw * GIMBAL_IMU_DT;//陀螺仪角度原始积分
-    yaw_imu_lpf += GIMBAL_IMU_LPF_ALPHA * (yaw_imu_angle - yaw_imu_lpf);//一阶低通滤波后得到的IMU角度
+static uint8_t gimbal_pitch_config_valid(const gimbal_pitch_cfg_t *cfg)
+{
+    return (uint8_t)((cfg->level >= 0) && (cfg->level < GIMBAL_ENC_RANGE) &&
+        ((cfg->dir == 1.0f) || (cfg->dir == -1.0f)) &&
+        gimbal_range_valid(cfg->kp, 0.0f, GIMBAL_GAIN_MAX) &&
+        gimbal_range_valid(cfg->ki, 0.0f, GIMBAL_GAIN_MAX) &&
+        gimbal_range_valid(cfg->kd, 0.0f, GIMBAL_GAIN_MAX) &&
+        gimbal_range_valid(cfg->out_lim, 0.0f, GIMBAL_COMMAND_MAX) && (cfg->out_lim > 0.0f) &&
+        gimbal_range_valid(cfg->int_lim, 0.0f, GIMBAL_INTEGRAL_MAX));
+}
+
+static uint8_t gimbal_pid_state_valid(const pid_t *pid)
+{
+    return (uint8_t)(gimbal_range_valid(pid->integral, -GIMBAL_INTEGRAL_MAX, GIMBAL_INTEGRAL_MAX) &&
+                    gimbal_range_valid(pid->last_error, -2.0f * GIMBAL_ANGLE_STATE_MAX,
+                                       2.0f * GIMBAL_ANGLE_STATE_MAX));
+}
+
+static uint8_t gimbal_imu_angle_update(void)//陀螺仪角度积分
+{
+    float angle;
+    float filtered;
+
+    if (!gimbal_range_valid(yaw_imu_angle, -GIMBAL_ANGLE_STATE_MAX, GIMBAL_ANGLE_STATE_MAX) ||
+        !gimbal_range_valid(yaw_imu_lpf, -GIMBAL_ANGLE_STATE_MAX, GIMBAL_ANGLE_STATE_MAX)) { return 0U; }
+    if (imu_online == 0U) { return 1U; }
+    if (!isfinite(imu_gyro_yaw)) { return 0U; }
+
+    angle = yaw_imu_angle + imu_gyro_yaw * GIMBAL_IMU_DT;
+    filtered = yaw_imu_lpf + GIMBAL_IMU_LPF_ALPHA * (angle - yaw_imu_lpf);
+    if (!gimbal_range_valid(angle, -GIMBAL_ANGLE_STATE_MAX, GIMBAL_ANGLE_STATE_MAX) ||
+        !gimbal_range_valid(filtered, -GIMBAL_ANGLE_STATE_MAX, GIMBAL_ANGLE_STATE_MAX)) { return 0U; }
+    yaw_imu_angle = angle;
+    yaw_imu_lpf = filtered;
+    return 1U;
 }
 
 //回绕处理
-#define GIMBAL_PI 3.14159265358979f
 static float gimbal_wrap_pi(float ang)//保障角度误差在正负pai之内
 {
-    while (ang >  GIMBAL_PI) { ang -= 2.0f * GIMBAL_PI; }
-    while (ang < -GIMBAL_PI) { ang += 2.0f * GIMBAL_PI; }
+    if (!isfinite(ang)) { return NAN; }
+    /* 不按圈数反复减2π：Inf或极大有限值都不能卡住控制中断。 */
+    if ((ang > GIMBAL_PI) || (ang < -GIMBAL_PI)) { ang = fmodf(ang, 2.0f * GIMBAL_PI); }
+    if (ang >  GIMBAL_PI) { ang -= 2.0f * GIMBAL_PI; }
+    if (ang < -GIMBAL_PI) { ang += 2.0f * GIMBAL_PI; }
     return ang;
 }
 
@@ -164,15 +221,14 @@ static void gimbal_pid_sync(pid_t *p, float kp, float ki, float kd,
     p->integral_limit = int_lim;
 }
 
-static float gimbal_yaw_control(void)
+static float gimbal_yaw_control(const gimbal_yaw_cfg_t *cfg)
 {
     float yaw_stick_norm;//摇杆轴归一化值
     float out;
 
     if (yaw_ready == 0U)
     {
-        pid_init(&pid_yaw, gimbal_cfg.yaw.kp_ang, gimbal_cfg.yaw.ki_ang, 0.0f,
-                 gimbal_cfg.yaw.w_ref_lim, gimbal_cfg.yaw.int_lim);
+        pid_init(&pid_yaw, cfg->kp_ang, cfg->ki_ang, 0.0f, cfg->w_ref_lim, cfg->int_lim);
         yaw_tgt       = yaw_imu_lpf;
         yaw_err       = 0.0f;
         yaw_omega_ref = 0.0f;
@@ -183,8 +239,7 @@ static float gimbal_yaw_control(void)
         return 0.0f;
     }
 
-    gimbal_pid_sync(&pid_yaw, gimbal_cfg.yaw.kp_ang, gimbal_cfg.yaw.ki_ang, 0.0f,
-                    gimbal_cfg.yaw.w_ref_lim, gimbal_cfg.yaw.int_lim);
+    gimbal_pid_sync(&pid_yaw, cfg->kp_ang, cfg->ki_ang, 0.0f, cfg->w_ref_lim, cfg->int_lim);
 
     if (remote.online == 0U)
     {
@@ -211,22 +266,23 @@ static float gimbal_yaw_control(void)
 
     yaw_stick_norm = input_axis(INPUT_AXIS_GIMBAL_YAW);
 
-    if (gimbal_cfg.yaw.speed_mode != 0U)
+    if (cfg->speed_mode != 0U)
     {
         //速控
-        yaw_omega_ref = yaw_stick_norm * gimbal_cfg.yaw.speed_max;
+        yaw_omega_ref = yaw_stick_norm * cfg->speed_max;
         yaw_omega_ff  = 0.0f;
         yaw_err       = 0.0f;
     }
     else
     {
         //位控
-        yaw_tgt += yaw_stick_norm * gimbal_cfg.yaw.tgt_rate;
+        yaw_tgt += yaw_stick_norm * cfg->tgt_rate;
+        if (!gimbal_range_valid(yaw_tgt, -GIMBAL_ANGLE_STATE_MAX, GIMBAL_ANGLE_STATE_MAX)) { return NAN; }
         yaw_err = gimbal_wrap_pi(yaw_tgt - yaw_imu_lpf);//保证误差在正负pi内，可成为归pi化
 
-        if (gimbal_cfg.yaw.omega_ff_en != 0U)//前馈开关
+        if (cfg->omega_ff_en != 0U)//前馈开关
         {
-            yaw_omega_ff = yaw_stick_norm * gimbal_cfg.yaw.speed_max;   /* 前馈 = 摇杆直接给的角速度 */
+            yaw_omega_ff = yaw_stick_norm * cfg->speed_max;   /* 前馈 = 摇杆直接给的角速度 */
         }
         else
         {
@@ -235,14 +291,15 @@ static float gimbal_yaw_control(void)
 
         /* target = fb + err，error 就是上面算好的 yaw_err */
         yaw_omega_ref = pid_calc(&pid_yaw, yaw_imu_lpf + yaw_err, yaw_imu_lpf) + yaw_omega_ff;//设定值ref就是pid算出来的值加上前馈
-        if (yaw_omega_ref >  gimbal_cfg.yaw.w_ref_lim) { yaw_omega_ref =  gimbal_cfg.yaw.w_ref_lim; }
-        if (yaw_omega_ref < -gimbal_cfg.yaw.w_ref_lim) { yaw_omega_ref = -gimbal_cfg.yaw.w_ref_lim; }
+        if (!isfinite(yaw_err) || !isfinite(yaw_omega_ref)) { return NAN; }
+        if (yaw_omega_ref >  cfg->w_ref_lim) { yaw_omega_ref =  cfg->w_ref_lim; }
+        if (yaw_omega_ref < -cfg->w_ref_lim) { yaw_omega_ref = -cfg->w_ref_lim; }
     }
 
     if (imu_online != 0U)
     {
         yaw_omega_fb = imu_gyro_yaw;
-        out = gimbal_cfg.yaw.kp_w * (yaw_omega_ref - yaw_omega_fb);
+        out = cfg->kp_w * (yaw_omega_ref - yaw_omega_fb);
     }
     else
     {
@@ -250,11 +307,12 @@ static float gimbal_yaw_control(void)
         out = 0.0f;
     }
 
-    if (yaw_omega_ref > 0.0f)      { out += gimbal_cfg.yaw.kick; }
-    else if (yaw_omega_ref < 0.0f) { out -= gimbal_cfg.yaw.kick; }
+    if (yaw_omega_ref > 0.0f)      { out += cfg->kick; }
+    else if (yaw_omega_ref < 0.0f) { out -= cfg->kick; }
 
-    if (out >  gimbal_cfg.yaw.out_lim) { out =  gimbal_cfg.yaw.out_lim; }//限幅削平输出
-    if (out < -gimbal_cfg.yaw.out_lim) { out = -gimbal_cfg.yaw.out_lim; }
+    if (!isfinite(out)) { return NAN; }
+    if (out >  cfg->out_lim) { out =  cfg->out_lim; }//限幅削平输出
+    if (out < -cfg->out_lim) { out = -cfg->out_lim; }
 
     yaw_out = out;
     return out;
@@ -289,33 +347,35 @@ static uint8_t gimbal_yaw_home_settled(uint8_t in_window, uint32_t now, uint32_t
 
 /* WAIT 不计超时；自动 RUN 只有一次机会，超时退出自动控制并保留告警。
    超时后可归中手动接管；手动回到零位并稳定后才 DONE，底盘自行检查放行。 */
-static float gimbal_yaw_startup_control(int16_t raw, uint32_t now, uint8_t allowed)
+static float gimbal_yaw_startup_control(const gimbal_yaw_cfg_t *yaw_cfg,
+                                      int16_t raw, uint32_t now, uint8_t allowed)
 {
     static uint32_t start_ms;
     static int16_t target_ecd;
     static int8_t ecd_dir;
-    const gimbal_yaw_home_cfg_t cfg = gimbal_cfg.yaw.home;
+    const gimbal_yaw_home_cfg_t cfg = yaw_cfg->home;
     int16_t zero = chassis_cfg.yaw_zero_ecd;
     int8_t dir = chassis_cfg.yaw_ecd_dir;
     int32_t abs_d;
-    float kp_w = gimbal_cfg.yaw.kp_w;
-    float yaw_out_lim = gimbal_cfg.yaw.out_lim;
+    float kp_w = yaw_cfg->kp_w;
+    float yaw_out_lim = yaw_cfg->out_lim;
     float out_lim;
     float out;
 
     if (yaw_home_state == GIMBAL_YAW_HOME_DONE)
     {
-        if (allowed != 0U) { return gimbal_yaw_control(); }
+        if (allowed != 0U) { return gimbal_yaw_control(yaw_cfg); }
         gimbal_yaw_reset();
         return 0.0f;
     }
     if ((zero < 0) || (zero >= GIMBAL_ENC_RANGE) || ((dir != 1) && (dir != -1)) ||
-        !isfinite(cfg.speed_max) || (cfg.speed_max <= 0.0f) ||
+        !gimbal_range_valid(cfg.speed_max, 0.0f, GIMBAL_SPEED_MAX) || (cfg.speed_max <= 0.0f) ||
         !isfinite(cfg.speed_min) || (cfg.speed_min <= 0.0f) || (cfg.speed_min > cfg.speed_max) ||
-        !isfinite(cfg.out_lim) || (cfg.out_lim <= 0.0f) ||
-        !isfinite(cfg.omega_tolerance) || (cfg.omega_tolerance <= 0.0f) ||
-        !isfinite(cfg.kp_ang) || (cfg.kp_ang <= 0.0f) || !isfinite(kp_w) || (kp_w <= 0.0f) ||
-        !isfinite(yaw_out_lim) || (yaw_out_lim <= 0.0f) ||
+        !gimbal_range_valid(cfg.out_lim, 0.0f, GIMBAL_COMMAND_MAX) || (cfg.out_lim <= 0.0f) ||
+        !gimbal_range_valid(cfg.omega_tolerance, 0.0f, GIMBAL_SPEED_MAX) || (cfg.omega_tolerance <= 0.0f) ||
+        !gimbal_range_valid(cfg.kp_ang, 0.0f, GIMBAL_GAIN_MAX) || (cfg.kp_ang <= 0.0f) ||
+        !gimbal_range_valid(kp_w, 0.0f, GIMBAL_GAIN_MAX) || (kp_w <= 0.0f) ||
+        !gimbal_range_valid(yaw_out_lim, 0.0f, GIMBAL_COMMAND_MAX) || (yaw_out_lim <= 0.0f) ||
         (cfg.tolerance_ecd == 0U) || (cfg.tolerance_ecd >= GIMBAL_ENC_HALF) ||
         (cfg.settle_ms == 0U) || (cfg.timeout_ms <= cfg.settle_ms) ||
         (((yaw_home_state == GIMBAL_YAW_HOME_RUN) ||
@@ -356,7 +416,7 @@ static float gimbal_yaw_startup_control(int16_t raw, uint32_t now, uint8_t allow
             gimbal_yaw_reset();
             return 0.0f;
         }
-        return gimbal_yaw_control();
+        return gimbal_yaw_control(yaw_cfg);
     }
 
     if (yaw_home_state == GIMBAL_YAW_HOME_RUN)
@@ -406,6 +466,7 @@ static float gimbal_yaw_startup_control(int16_t raw, uint32_t now, uint8_t allow
     yaw_omega_fb = imu_gyro_yaw;
     out = kp_w * (yaw_omega_ref - yaw_omega_fb);
     out_lim = (cfg.out_lim < yaw_out_lim) ? cfg.out_lim : yaw_out_lim;
+    if (!isfinite(out)) { return NAN; }
     if (out > out_lim) { out = out_lim; }
     if (out < -out_lim) { out = -out_lim; }
     yaw_out = out;
@@ -426,42 +487,41 @@ static uint8_t pitch_ready = 0U;
 
 /* 把"原始角 0~8191"换算成"相对水平的偏差"：正 = 水平上方
    为什么要有回绕修正：万一 angle 从 0 跳到 8191，直接相减会得到 ±8192 的假误差 */
-static float gimbal_pitch_fb(void)
+static float gimbal_pitch_fb(int16_t level)
 {
-    int32_t d = (int32_t)motor_gimbal[GIMBAL_AXIS_PITCH].fb.angle - (int32_t)gimbal_cfg.pitch.level;
+    int32_t d = (int32_t)motor_gimbal[GIMBAL_AXIS_PITCH].fb.angle - (int32_t)level;
     if (d >  GIMBAL_PITCH_ENC_HALF) { d -= GIMBAL_PITCH_ENC_RANGE; }
     if (d < -GIMBAL_PITCH_ENC_HALF) { d += GIMBAL_PITCH_ENC_RANGE; }
 
     return (float)d;
 }
 
-static float gimbal_pitch_control(void)
+static float gimbal_pitch_control(const gimbal_pitch_cfg_t *cfg)
 {
     if (pitch_ready == 0U)
     {
-        pid_init(&pid_pitch, gimbal_cfg.pitch.kp, gimbal_cfg.pitch.ki, gimbal_cfg.pitch.kd,
-                 gimbal_cfg.pitch.out_lim, gimbal_cfg.pitch.int_lim);
+        pid_init(&pid_pitch, cfg->kp, cfg->ki, cfg->kd, cfg->out_lim, cfg->int_lim);
         pitch_tgt     = 0.0f;
-        pitch_fb      = gimbal_pitch_fb();
+        pitch_fb      = gimbal_pitch_fb(cfg->level);
         pitch_err     = 0.0f;
         pitch_pid_out = 0.0f;
         pitch_ready   = 1U;
         return 0.0f;
     }
 
-    gimbal_pid_sync(&pid_pitch, gimbal_cfg.pitch.kp, gimbal_cfg.pitch.ki, gimbal_cfg.pitch.kd,
-                    gimbal_cfg.pitch.out_lim, gimbal_cfg.pitch.int_lim);
+    gimbal_pid_sync(&pid_pitch, cfg->kp, cfg->ki, cfg->kd, cfg->out_lim, cfg->int_lim);
 
     pitch_tgt     = 0.0f;
-    pitch_fb      = gimbal_pitch_fb();
+    pitch_fb      = gimbal_pitch_fb(cfg->level);
     pitch_err     = pitch_tgt - pitch_fb;
-    pitch_pid_out = pid_calc(&pid_pitch, pitch_tgt, pitch_fb) * gimbal_cfg.pitch.dir;
+    pitch_pid_out = pid_calc(&pid_pitch, pitch_tgt, pitch_fb) * cfg->dir;
 
     return pitch_pid_out;
 }
 
 void gimbal_run(void)
 {
+    const gimbal_cfg_t cfg = gimbal_cfg;
     int16_t raw = motor_gimbal[GIMBAL_AXIS_YAW].fb.angle;
     uint32_t last_ms = motor_gimbal[GIMBAL_AXIS_YAW].fb.last_ms;
     int16_t pitch_raw = motor_gimbal[GIMBAL_AXIS_PITCH].fb.angle;
@@ -469,7 +529,7 @@ void gimbal_run(void)
     uint32_t now = HAL_GetTick();
     uint32_t yaw_age = (last_ms != 0U) ? (now - last_ms) : UINT32_MAX;
     uint32_t pitch_age = (pitch_last_ms != 0U) ? (now - pitch_last_ms) : UINT32_MAX;
-    uint8_t enabled = gimbal_cfg.enable;
+    uint8_t enabled = cfg.enable;
     uint8_t yaw_inhibit = 0U;
     uint8_t pitch_inhibit = 0U;
     float out;
@@ -477,19 +537,30 @@ void gimbal_run(void)
     gimbal_angle_track();              
     yaw_angle_deg = (float)yaw_angle_acc * (360.0f / 8192.0f);   //算一下YAW电机相对底盘转了多少度
 
-    gimbal_imu_angle_update();          
+    if (gimbal_imu_angle_update() == 0U) { yaw_inhibit |= GIMBAL_INHIBIT_NONFINITE; }
     yaw_imu_deg   = yaw_imu_lpf * 57.29578f; //IMU输出的是角速度，角速度积分得到的角度是弧度制，因此这里需要手动转化为角度                    
 
     if (enabled == 0U) { yaw_inhibit |= GIMBAL_INHIBIT_DISABLED; pitch_inhibit |= GIMBAL_INHIBIT_DISABLED; }
+    if (enabled > 1U) { yaw_inhibit |= GIMBAL_INHIBIT_CONFIG; pitch_inhibit |= GIMBAL_INHIBIT_CONFIG; }
+    if (gimbal_yaw_config_valid(&cfg.yaw) == 0U) { yaw_inhibit |= GIMBAL_INHIBIT_CONFIG; }
+    if (gimbal_pitch_config_valid(&cfg.pitch) == 0U) { pitch_inhibit |= GIMBAL_INHIBIT_CONFIG; }
+    if ((yaw_home_state < GIMBAL_YAW_HOME_WAIT) || (yaw_home_state > GIMBAL_YAW_HOME_FAULT) ||
+        (yaw_home_fault < GIMBAL_YAW_HOME_FAULT_NONE) || (yaw_home_fault > GIMBAL_YAW_HOME_FAULT_TIMEOUT))
+    {
+        yaw_inhibit |= GIMBAL_INHIBIT_CONFIG;
+    }
     if (remote.online == 0U) { yaw_inhibit |= GIMBAL_INHIBIT_REMOTE; pitch_inhibit |= GIMBAL_INHIBIT_REMOTE; }
     if (imu_online == 0U) { yaw_inhibit |= GIMBAL_INHIBIT_IMU; }
     if ((raw < 0) || (raw >= GIMBAL_ENC_RANGE) || (last_ms == 0U) || (yaw_age > GIMBAL_ANGLE_GAP))
     {
         yaw_inhibit |= GIMBAL_INHIBIT_FEEDBACK;
     }
-    if (!isfinite(imu_gyro_yaw) || !isfinite(yaw_imu_lpf)) { yaw_inhibit |= GIMBAL_INHIBIT_NONFINITE; }
-    /* PITCH 只等上电静止标定完成，之后不依赖 YAW 反馈或 IMU 在线状态。 */
-    if (imu_cal_ok == 0U) { pitch_inhibit |= GIMBAL_INHIBIT_IMU; }
+    if (!isfinite(imu_gyro_yaw) ||
+        !gimbal_range_valid(yaw_tgt, -GIMBAL_ANGLE_STATE_MAX, GIMBAL_ANGLE_STATE_MAX) ||
+        (gimbal_pid_state_valid(&pid_yaw) == 0U)) { yaw_inhibit |= GIMBAL_INHIBIT_NONFINITE; }
+    if (gimbal_pid_state_valid(&pid_pitch) == 0U) { pitch_inhibit |= GIMBAL_INHIBIT_NONFINITE; }
+    /* PITCH等IMU启动流程结束；初始化失败也可结束等待，不依赖YAW测量许可。 */
+    if (imu_startup_done == 0U) { pitch_inhibit |= GIMBAL_INHIBIT_IMU; }
     if ((pitch_raw < 0) || (pitch_raw >= GIMBAL_PITCH_ENC_RANGE) ||
         (pitch_last_ms == 0U) || (pitch_age > 100U))
     {
@@ -497,19 +568,21 @@ void gimbal_run(void)
     }
     yaw_feedback_age_ms = yaw_age;
     pitch_feedback_age_ms = pitch_age;
-    out = gimbal_yaw_startup_control(raw, now, (uint8_t)(yaw_inhibit == 0U));
+    out = gimbal_yaw_startup_control(&cfg.yaw, raw, now, (uint8_t)(yaw_inhibit == 0U));
     if (!isfinite(out))
     {
         yaw_inhibit |= GIMBAL_INHIBIT_NONFINITE;
         gimbal_yaw_reset();
         out = 0.0f;
     }
+    if (out >  GIMBAL_COMMAND_MAX) { out =  GIMBAL_COMMAND_MAX; }
+    if (out < -GIMBAL_COMMAND_MAX) { out = -GIMBAL_COMMAND_MAX; }
     yaw_control_inhibit = yaw_inhibit;
     motor_gimbal_send_yaw((int16_t)out);     
 
     if (pitch_inhibit == 0U)
     {
-        out = gimbal_pitch_control();
+        out = gimbal_pitch_control(&cfg.pitch);
         if (!isfinite(out))
         {
             pitch_inhibit |= GIMBAL_INHIBIT_NONFINITE;
@@ -526,6 +599,8 @@ void gimbal_run(void)
         pitch_pid_out = 0.0f;
         out = 0.0f;
     }
+    if (out >  GIMBAL_COMMAND_MAX) { out =  GIMBAL_COMMAND_MAX; }
+    if (out < -GIMBAL_COMMAND_MAX) { out = -GIMBAL_COMMAND_MAX; }
     pitch_control_inhibit = pitch_inhibit;
     motor_gimbal_send_pitch((int16_t)out);//同上
 }

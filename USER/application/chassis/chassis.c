@@ -11,12 +11,18 @@
 #define CHASSIS_YAW_ENC_RANGE 8192L
 #define CHASSIS_YAW_ENC_HALF  4096L
 #define CHASSIS_TWO_PI        6.28318530718f
+/* 宽松数值保护，不是电机能力或PID稳定边界。 */
+#define CHASSIS_COMMAND_MAX   ((float)INT16_MAX)
+#define CHASSIS_GAIN_MAX      1000000.0f
+#define CHASSIS_INTEGRAL_MAX  1000000000.0f
+#define CHASSIS_PID_ERROR_MAX (2.0f * (CHASSIS_COMMAND_MAX + 1.0f))
 /* 下标 0~3 = 0x201 FR / 0x202 FL / 0x203 RL / 0x204 RR（实测） */
 /* +1 = 正电流对应前进（左右镜像安装） */
 const int8_t motor_dir[4] = { +1, -1, -1, +1 };
 
 volatile int16_t dbg_cur[4] = { 0, 0, 0, 0 };
 volatile chassis_mode_e chassis_mode = CHASSIS_MODE_PID_TEST;
+volatile chassis_control_fault_e chassis_control_fault = CHASSIS_CONTROL_FAULT_NONE;
 volatile chassis_cfg_t chassis_cfg =
 {
     .fwd_cur = 2500, .strafe_cur = 2500, .spin_cur = 2500, .cur_max = 4500,
@@ -52,6 +58,23 @@ volatile uint8_t pid_ok = 0U;
 
 static pid_t chassis_pid[4];
 
+static uint8_t chassis_range_valid(float value, float low, float high)
+{
+    return (uint8_t)(isfinite(value) && (value >= low) && (value <= high));
+}
+
+static uint8_t chassis_pid_config_valid(const chassis_cfg_t *cfg)
+{
+    return (uint8_t)((cfg->follow_en <= 1U) &&
+        chassis_range_valid(cfg->max_rpm, 0.0f, CHASSIS_COMMAND_MAX) && (cfg->max_rpm > 0.0f) &&
+        chassis_range_valid(cfg->spin_fixed_rpm, -CHASSIS_COMMAND_MAX, CHASSIS_COMMAND_MAX) &&
+        chassis_range_valid(cfg->kp, 0.0f, CHASSIS_GAIN_MAX) &&
+        chassis_range_valid(cfg->ki, 0.0f, CHASSIS_GAIN_MAX) &&
+        chassis_range_valid(cfg->kd, 0.0f, CHASSIS_GAIN_MAX) &&
+        chassis_range_valid(cfg->out_lim, 0.0f, CHASSIS_COMMAND_MAX) && (cfg->out_lim > 0.0f) &&
+        chassis_range_valid(cfg->int_lim, 0.0f, CHASSIS_INTEGRAL_MAX));
+}
+
 /* STOP、失效和等待归中都走这里，主动发零，避免保留上一次电流。 */
 static void chassis_stop(void)
 {
@@ -71,6 +94,12 @@ static void chassis_stop(void)
         dbg_cur[i] = 0;
     }
     motor_chassis_send_current(zero);
+}
+
+static void chassis_fail(chassis_control_fault_e fault)
+{
+    chassis_control_fault = fault;
+    chassis_stop();
 }
 
 static void chassis_yaw_update(const chassis_cfg_t *cfg)
@@ -102,7 +131,7 @@ static void chassis_yaw_update(const chassis_cfg_t *cfg)
     chassis_yaw_valid = 1U;
 }
 
-static void chassis_rc_run(void)
+static void chassis_rc_run(const chassis_cfg_t *cfg)
 {
     float   vx;
     float   vy;
@@ -110,6 +139,12 @@ static void chassis_rc_run(void)
     float   wf[4];
     int16_t cur[4] = { 0, 0, 0, 0 };
     uint8_t i;
+
+    if (cfg->cur_max < 0)
+    {
+        chassis_fail(CHASSIS_CONTROL_FAULT_CONFIG);
+        return;
+    }
 
     /* 掉线 -> 立即全 0 电流 */
     if (remote.online == 0U)
@@ -131,9 +166,9 @@ static void chassis_rc_run(void)
         return;
     }
 
-    vx *= (float)chassis_cfg.fwd_cur;
-    vy *= (float)chassis_cfg.strafe_cur;
-    wz *= (float)chassis_cfg.spin_cur;
+    vx *= (float)cfg->fwd_cur;
+    vy *= (float)cfg->strafe_cur;
+    wz *= (float)cfg->spin_cur;
     dbg_vx_input = vx; dbg_vy_input = vy;
 
     dbg_vx = vx; dbg_vy = vy; dbg_wz = wz;
@@ -149,8 +184,9 @@ static void chassis_rc_run(void)
     {
         float c = wf[i];
 
-        if (c >  (float)chassis_cfg.cur_max) { c =  (float)chassis_cfg.cur_max; }
-        if (c < -(float)chassis_cfg.cur_max) { c = -(float)chassis_cfg.cur_max; }
+        if (!isfinite(c)) { chassis_fail(CHASSIS_CONTROL_FAULT_NUMERIC); return; }
+        if (c >  (float)cfg->cur_max) { c =  (float)cfg->cur_max; }
+        if (c < -(float)cfg->cur_max) { c = -(float)cfg->cur_max; }
 
         /* 该轮从未上线 -> 不给电流 */
         if (motor_chassis[i].fb.online == 0U) { c = 0.0f; }
@@ -166,8 +202,6 @@ static void chassis_rc_run(void)
     /* TIM6 已给 1kHz 节拍，这里不再限速 */
     motor_chassis_send_current(cur);
 }
-
-
 
 static void chassis_pid_run(const chassis_cfg_t *cfg)
 {
@@ -187,6 +221,13 @@ static void chassis_pid_run(const chassis_cfg_t *cfg)
     uint8_t follow_on = (uint8_t)((spin_on == 0U) && (cfg->follow_en != 0U) &&
                                 (cfg->move_frame == CHASSIS_FRAME_GIMBAL));
     uint8_t i;
+
+    /* 校验先于PID初始化、同步和目标计算。 */
+    if (chassis_pid_config_valid(cfg) == 0U)
+    {
+        chassis_fail(CHASSIS_CONTROL_FAULT_CONFIG);
+        return;
+    }
 
     if (pid_ok == 0U)
     {
@@ -220,12 +261,12 @@ static void chassis_pid_run(const chassis_cfg_t *cfg)
     x_norm = input_axis(INPUT_AXIS_CHASSIS_X);
     y_norm = input_axis(INPUT_AXIS_CHASSIS_Y);
     if ((follow_on != 0U) &&
-        (!isfinite(cfg->follow_kp) || (cfg->follow_kp <= 0.0f) ||
-         !isfinite(cfg->follow_max_rpm) || (cfg->follow_max_rpm <= 0.0f) ||
+        (!chassis_range_valid(cfg->follow_kp, 0.0f, CHASSIS_GAIN_MAX) || (cfg->follow_kp <= 0.0f) ||
+         !chassis_range_valid(cfg->follow_max_rpm, 0.0f, CHASSIS_COMMAND_MAX) || (cfg->follow_max_rpm <= 0.0f) ||
          !isfinite(cfg->follow_deadband_rad) || (cfg->follow_deadband_rad < 0.0f) ||
          (cfg->follow_deadband_rad >= (CHASSIS_TWO_PI * 0.5f))))
     {
-        chassis_stop();
+        chassis_fail(CHASSIS_CONTROL_FAULT_CONFIG);
         return;
     }
     if (chassis_wait_neutral != 0U)
@@ -280,6 +321,7 @@ static void chassis_pid_run(const chassis_cfg_t *cfg)
     /* 超速时四轮等比缩放：逐轮独立限幅会把方向扭歪 */
     for (i = 0U; i < 4U; i++)
     {
+        if (!isfinite(tgt[i])) { chassis_fail(CHASSIS_CONTROL_FAULT_NUMERIC); return; }
         float a = (tgt[i] < 0.0f) ? -tgt[i] : tgt[i];
         if (a > maxabs) { maxabs = a; }
     }
@@ -293,6 +335,7 @@ static void chassis_pid_run(const chassis_cfg_t *cfg)
     for (i = 0U; i < 4U; i++)
     {
         float fb = (float)motor_chassis[i].fb.speed_rpm * (float)motor_dir[i];  /* 前进为正 */
+        float command;
 
         pid_tar[i] = tgt[i];
         pid_fb [i] = fb;
@@ -307,7 +350,17 @@ static void chassis_pid_run(const chassis_cfg_t *cfg)
             continue;
         }
 
-        cur[i] = (int16_t)(pid_calc(&chassis_pid[i], tgt[i], fb) * (float)motor_dir[i]);
+        if (!chassis_range_valid(chassis_pid[i].integral, -CHASSIS_INTEGRAL_MAX, CHASSIS_INTEGRAL_MAX) ||
+            !chassis_range_valid(chassis_pid[i].last_error, -CHASSIS_PID_ERROR_MAX, CHASSIS_PID_ERROR_MAX))
+        {
+            chassis_fail(CHASSIS_CONTROL_FAULT_NUMERIC);
+            return;
+        }
+        command = pid_calc(&chassis_pid[i], tgt[i], fb) * (float)motor_dir[i];
+        if (!isfinite(command)) { chassis_fail(CHASSIS_CONTROL_FAULT_NUMERIC); return; }
+        if (command >  CHASSIS_COMMAND_MAX) { command =  CHASSIS_COMMAND_MAX; }
+        if (command < -CHASSIS_COMMAND_MAX) { command = -CHASSIS_COMMAND_MAX; }
+        cur[i] = (int16_t)command;
         dbg_cur[i] = cur[i];
     }
 
@@ -325,6 +378,13 @@ void chassis_run(void)
     chassis_mode_e mode = chassis_mode;
     const chassis_cfg_t cfg = chassis_cfg;
     chassis_follow_active = 0U;
+    chassis_control_fault = CHASSIS_CONTROL_FAULT_NONE;
+
+    if ((mode != CHASSIS_MODE_STOP) && (mode != CHASSIS_MODE_RC) && (mode != CHASSIS_MODE_PID_TEST))
+    {
+        chassis_fail(CHASSIS_CONTROL_FAULT_CONFIG);
+        return;
+    }
 
     /* WAIT/RUN 暂停底盘；超时已退出自动回正，可经下方有效性检查和归中后运行。
        保留超时告警，不伪装成回正成功；配置故障或未知状态仍停输出。 */
@@ -360,7 +420,7 @@ void chassis_run(void)
         chassis_yaw_valid = 0U;
         chassis_yaw_rel_rad = 0.0f;
         chassis_yaw_age_ms = UINT32_MAX;
-        chassis_rc_run();
+        chassis_rc_run(&cfg);
         break;
 
     case CHASSIS_MODE_PID_TEST:

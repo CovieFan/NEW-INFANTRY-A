@@ -22,7 +22,7 @@
 /* 重力方向低通系数：越小越稳、越慢跟上倾斜。0.002 在 ~3kHz 主循环下 ≈ 1Hz */
 #define BSP_IMU_GRAV_ALPHA    (0.002f)
 
-/* 加计模长平方下限：|a| < 2000LSB(≈0.49g) 认为加计不可信 → 投影输出 0
+/* 加计模长平方下限：|a| <= 2000LSB(≈0.49g) 拒绝投影，不参与标定或控制
    （实测静止 |a| ≈ 4400 ⇒ n2 ≈ 1.9e7，余量很大）*/
 #define BSP_IMU_GRAV_MIN_N2   (4000000.0f)
 
@@ -33,17 +33,33 @@
 #define BSP_IMU_CAL_MS        1000U   /* 上电后标定窗口长度(ms)；这段时间 imu_online 保持 0 */
 #define BSP_IMU_CAL_MIN_CNT   500U    /* 窗口内至少采这么多帧才算标定成功，否则重来一轮 */
 
-/* ★2026-10-13 实测沉淀（EmberProbe 在线测得）：
-   上电 1 秒标定不可信 —— 同一块板两次上电分别标出 +0.0279 / -0.0468 rad/s（差 4.3 °/s）。
-   故：① 预置下面这个实测值作兜底；② 只有「确实静止」的标定才允许覆盖它。
-   实测关系：真实漂移速率 = 真实零偏 - 标定值；已用在线写入三步验证 1.233 -> 0.601 -> 0 °/s。
-   实测条件：A 板立装、室温约 25 度、云台静止、底盘静止。 */
+/* 旧投影标量兜底：三轴标定未通过时沿用，不能拆成三轴默认偏置。
+   历史实测条件为A板立装、室温约25度；该值仍有姿态/温度适用性限制。 */
 #define BSP_IMU_YAW_BIAS_DEFAULT  (-0.0674f)
 #define BSP_IMU_CAL_MAX_DEV_LSB   100U   /* 标定窗口内三轴相对首帧的最大偏差上限(LSB) ≈3 °/s，超了判「动过」 */
 
 
-void bsp_imu_init(void);      /* 上电调用一次：复位 + 自检 + 配置 */
-void bsp_imu_update(void);    /* 1kHz 调用一次：读一帧 + 在线判定 */
+typedef enum
+{
+    BSP_IMU_FAULT_NONE = 0,
+    BSP_IMU_FAULT_INIT_SPI,
+    BSP_IMU_FAULT_INIT_ID,
+    BSP_IMU_FAULT_INIT_CONFIG,
+    BSP_IMU_FAULT_SAMPLE_SPI,
+    BSP_IMU_FAULT_SAMPLE_GRAVITY,
+    BSP_IMU_FAULT_SAMPLE_NONFINITE,
+    BSP_IMU_FAULT_CAL_STATE
+} bsp_imu_fault_e;
+
+typedef enum
+{
+    BSP_IMU_CAL_PENDING = 0,
+    BSP_IMU_CAL_VECTOR,          /* 三轴静止均值已采用；先逐轴扣偏置，再投影 */
+    BSP_IMU_CAL_LEGACY_DEFAULT   /* 本次均值未采用，沿用旧投影标量兜底 */
+} bsp_imu_cal_source_e;
+
+void bsp_imu_init(void);      /* 上电调用：复位、自检、配置写入及读回 */
+void bsp_imu_update(void);    /* 主循环调用：读取、检查投影、标定或发布速度 */
 
 /* ---- Watch 用 ---- */
 extern volatile float    imu_gyro_z;      /* 陀螺 Z 轴角速度 (rad/s)，已乘 SIGN */
@@ -55,19 +71,28 @@ extern volatile int16_t  imu_acc_x_raw;   /* 加计原始值（只取方向，�
 extern volatile int16_t  imu_acc_y_raw;
 extern volatile int16_t  imu_acc_z_raw;
 extern volatile float    imu_acc_norm;  /* ★加计三轴模长 |a| (LSB)：静止 ≈ 4096 */
-extern volatile float    imu_gyro_yaw;    /* ★投影后的真 yaw 角速度 (rad/s) */
+extern volatile float    imu_gyro_yaw;    /* 修正零偏后的竖直角速度分量 (rad/s)，不等于绝对航向 */
 extern volatile float    imu_grav_ux;   /* ★重力方向单位向量（机体系），平方和 = 1 */
 extern volatile float    imu_grav_uy;
 extern volatile float    imu_grav_uz;
 
 
 extern volatile uint8_t  imu_whoami;      /* 自检：应为 0x70 */
-extern volatile uint8_t  imu_online;      /* 1 = 20ms 内读到过 */
-extern volatile uint32_t imu_read_ok;     /* 成功帧数 */
+extern volatile uint8_t  imu_online;      /* 初始化合格、标定结束、最近投影有效；SPI失败保留20ms超时 */
+extern volatile uint8_t  imu_init_ok;     /* 1 = ID、配置写入与读回均通过 */
+extern volatile uint8_t  imu_startup_done;/* 启动流程已结束：标定完成或初始化失败；供独立PITCH启动 */
+extern volatile uint8_t  imu_sample_valid;/* 最近一次读取的投影有效；标定期间也可为1 */
+extern volatile bsp_imu_fault_e imu_fault;
+extern volatile uint32_t imu_invalid_count; /* SPI成功但投影/最终速度被拒绝的帧数 */
+extern volatile uint32_t imu_read_ok;     /* SPI burst成功帧数，不等于投影有效帧数 */
 extern volatile uint32_t imu_read_fail;   /* 失败帧数 */
 
-extern volatile float    imu_gyro_z_bias; /* 标定出的零偏 (rad/s) */
-extern volatile uint8_t  imu_cal_ok;      /* 1 = 零偏标定完成 */
+extern volatile float    imu_gyro_bias_x; /* 传感器X/Y/Z轴零偏，rad/s，未乘SIGN */
+extern volatile float    imu_gyro_bias_y;
+extern volatile float    imu_gyro_bias_z;
+extern volatile bsp_imu_cal_source_e imu_cal_source;
+extern volatile float    imu_gyro_z_bias; /* 仅LEGACY_DEFAULT使用的旧投影标量；VECTOR不使用 */
+extern volatile uint8_t  imu_cal_ok;      /* 1 = 流程结束；看cal_source区分三轴标定/旧兜底 */
 extern volatile uint32_t imu_cal_cnt;     /* 标定窗口内采到的帧数 */
 
 #endif
