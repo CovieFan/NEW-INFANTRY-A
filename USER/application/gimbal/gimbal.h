@@ -44,14 +44,14 @@ typedef struct
 typedef struct
 {
     float kp_ang;        /* 驻车相对编码器角差(rad) -> 目标角速度 */
-    float speed_max;     /* 扰动恢复速度上限，rad/s；不设最小速度 */
-    float out_lim;       /* 驻车命令上限，另受正常YAW限幅约束 */
-} gimbal_yaw_park_cfg_t;
+    float speed_max;     
+    float out_lim;       
+} gimbal_yaw_park_cfg_t;//驻车模式
 
 typedef struct
 {
     uint8_t speed_mode;    /* 1 = 速控；0 = 位控 */
-    uint8_t omega_ff_en;   /* 位控：速度前馈开关 */
+    uint8_t omega_ff_en;   //位控的速度前馈开关
     float   kp_w;          /* 速度环 P：命令值 / (rad/s) */
     float   kick;          /* 起步电流*/
     float   speed_max;     
@@ -84,18 +84,29 @@ typedef struct
 } gimbal_cfg_t;
 
 extern volatile gimbal_cfg_t gimbal_cfg;
-extern volatile gimbal_yaw_home_state_e yaw_home_state;
-extern volatile gimbal_yaw_home_fault_e yaw_home_fault;
-extern volatile float    yaw_home_err;        /*最短回正角差，rad，左转为正 */
-extern volatile uint32_t yaw_home_elapsed_ms;
-extern volatile uint32_t yaw_home_stable_ms;
-extern volatile uint8_t  yaw_home_manual_ready; /* 超时后 YAW 杆归中，允许手动接管 */
-extern volatile uint8_t  yaw_control_inhibit;
-extern volatile uint8_t  pitch_control_inhibit;
-extern volatile uint32_t yaw_feedback_age_ms;
-extern volatile uint32_t pitch_feedback_age_ms;
-extern volatile uint8_t  yaw_park_active;
-extern volatile float    yaw_park_err; /* 相对锁存编码器角的最短误差，rad */
+
+/* 运行时可观测状态：逐成员访问，禁止整体赋值 */
+typedef struct
+{
+    /* ---- YAW 启动回正 ---- */
+    gimbal_yaw_home_state_e home_state;
+    gimbal_yaw_home_fault_e home_fault;
+    uint8_t  home_manual_ready;   /* 超时后 YAW 杆归中，允许手动接管 */
+    float    home_err;            /* 最短回正角差，rad，左转为正 */
+    uint32_t home_elapsed_ms;
+    uint32_t home_stable_ms;
+    /* ---- 控制许可位图（GIMBAL_INHIBIT_x 组合）---- */
+    uint8_t  yaw_inhibit;
+    uint8_t  pitch_inhibit;
+    /* ---- 反馈新鲜度 ---- */
+    uint32_t yaw_age_ms;
+    uint32_t pitch_age_ms;
+    /* ---- YAW 驻车 ---- */
+    uint8_t  yaw_park_active;
+    float    yaw_park_err;        /* 相对锁存编码器角的最短误差，rad */
+} gimbal_state_t;
+
+extern volatile gimbal_state_t gimbal_state;
 
 void gimbal_run(void);
 

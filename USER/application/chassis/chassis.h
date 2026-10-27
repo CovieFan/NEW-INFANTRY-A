@@ -77,26 +77,44 @@ typedef enum
 } chassis_control_fault_e;
 
 extern volatile chassis_cfg_t  chassis_cfg;
-extern volatile chassis_mode_e chassis_mode;
-extern volatile chassis_control_fault_e chassis_control_fault;
 
-/* Watch：相对角左转为正，单位 rad；valid=0 时不得用于坐标转换。 */
-extern volatile float    chassis_yaw_rel_rad;
-extern volatile uint32_t chassis_yaw_age_ms;
-extern volatile uint8_t  chassis_yaw_valid;
-extern volatile uint8_t  chassis_wait_neutral; /* 1 = 等待平移归中且关闭自转 */
-extern volatile uint8_t  chassis_follow_active; /* 1 = 自动跟随正在给出非零转向目标 */
-extern volatile float    dbg_vx_input;        /* 转换前指令；PID 模式单位为转子 rpm */
-extern volatile float    dbg_vy_input;
-extern volatile float    chassis_translation_scale; /* PID平移实际缩放比例；停止/RC模式为0 */
-extern volatile float    chassis_wz_applied;        /* 四轮目标反算的旋转分量，转子rpm尺度 */
-extern volatile chassis_park_state_e chassis_park_state;
-extern volatile uint32_t chassis_park_idle_ms;
-extern volatile uint32_t chassis_park_brake_ms;
-extern volatile uint32_t chassis_park_stable_ms;
-extern volatile int16_t  chassis_park_yaw_ecd; /* HOLD时有效，退出后为-1 */
-extern volatile int8_t   chassis_park_yaw_dir;
-extern volatile chassis_park_fault_e chassis_park_fault;
+/* 运行时可观测状态：逐成员访问，禁止整体赋值 */
+typedef struct
+{
+    /* ---- 模式与故障 ---- */
+    chassis_mode_e          mode;
+    chassis_control_fault_e control_fault;
+    uint8_t  wait_neutral;      /* 1 = 等待平移归中且关闭自转 */
+    uint8_t  follow_active;     /* 1 = 自动跟随正在给出非零转向目标 */
+    /* ---- 云台相对角（valid=0 时不得用于坐标转换）---- */
+    float    yaw_rel_rad;       /* 左转为正，rad */
+    uint32_t yaw_age_ms;
+    uint8_t  yaw_valid;
+    /* ---- 驻车 ---- */
+    chassis_park_state_e park_state;
+    chassis_park_fault_e park_fault;
+    uint32_t park_idle_ms;
+    uint32_t park_brake_ms;
+    uint32_t park_stable_ms;
+    int16_t  park_yaw_ecd;      /* HOLD 时有效，退出后为 -1 */
+    int8_t   park_yaw_dir;
+    /* ---- 输出诊断（每帧重算）---- */
+    float    translation_scale; /* PID 平移实际缩放比例；停止/RC 模式为 0 */
+    float    wz_applied;        /* 四轮目标反算的旋转分量，转子 rpm 尺度 */
+    float    pid_tar[4];        /* 四轮目标（前进为正） */
+    float    pid_fb[4];         /* 四轮反馈（前进为正） */
+    float    pid_scale;
+    uint8_t  pid_ok;
+    /* ---- 调试 ---- */
+    int16_t  dbg_cur[4];
+    float    dbg_vx;
+    float    dbg_vy;
+    float    dbg_wz;
+    float    dbg_vx_input;      /* 转换前指令；PID 模式单位为转子 rpm */
+    float    dbg_vy_input;
+} chassis_state_t;
+
+extern volatile chassis_state_t chassis_state;
 
 void chassis_run(void);
 

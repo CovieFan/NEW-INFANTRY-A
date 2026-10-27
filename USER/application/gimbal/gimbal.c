@@ -189,26 +189,29 @@ volatile float   yaw_out       = 0.0f;  /* ★最终命令值（发出去的就�
 pid_t   pid_yaw;
 static uint8_t yaw_ready = 0U;
 
-volatile gimbal_yaw_home_state_e yaw_home_state = GIMBAL_YAW_HOME_WAIT;
-volatile gimbal_yaw_home_fault_e yaw_home_fault = GIMBAL_YAW_HOME_FAULT_NONE;
-volatile float    yaw_home_err = 0.0f;
-volatile uint32_t yaw_home_elapsed_ms = 0U;
-volatile uint32_t yaw_home_stable_ms = 0U;
-volatile uint8_t  yaw_home_manual_ready = 0U;
-volatile uint8_t  yaw_control_inhibit = 0U;
-volatile uint8_t  pitch_control_inhibit = 0U;
-volatile uint32_t yaw_feedback_age_ms = UINT32_MAX;
-volatile uint32_t pitch_feedback_age_ms = UINT32_MAX;
-volatile uint8_t  yaw_park_active = 0U;
-volatile float    yaw_park_err = 0.0f;
+volatile gimbal_state_t gimbal_state =
+{
+    .home_state        = GIMBAL_YAW_HOME_WAIT,
+    .home_fault        = GIMBAL_YAW_HOME_FAULT_NONE,
+    .home_err          = 0.0f,
+    .home_elapsed_ms   = 0U,
+    .home_stable_ms    = 0U,
+    .home_manual_ready = 0U,
+    .yaw_inhibit       = 0U,
+    .pitch_inhibit     = 0U,
+    .yaw_age_ms        = UINT32_MAX,
+    .pitch_age_ms      = UINT32_MAX,
+    .yaw_park_active   = 0U,
+    .yaw_park_err      = 0.0f,
+};
 
 /* 重新贴合 IMU 目标，不改回正完成标志，防恢复时追赶旧目标。 */
 static void gimbal_yaw_reset(void)
 {
     pid_reset(&pid_yaw);
     yaw_ready = 0U;
-    yaw_park_active = 0U;
-    yaw_park_err = 0.0f;
+    gimbal_state.yaw_park_active = 0U;
+    gimbal_state.yaw_park_err = 0.0f;
     angle_rebased = 0U;
     yaw_tgt = yaw_imu_lpf;
     yaw_err = 0.0f;
@@ -329,25 +332,25 @@ static float gimbal_yaw_control(const gimbal_yaw_cfg_t *cfg)
 /* 正常接管与驻车共用原速度环；驻车位置反馈只看锁存的相对编码器角。 */
 static float gimbal_yaw_operate(const gimbal_yaw_cfg_t *cfg, int16_t raw)
 {
-    if (chassis_park_state == CHASSIS_PARK_HOLD)
+    if (chassis_state.park_state == CHASSIS_PARK_HOLD)
     {
-        int16_t target = chassis_park_yaw_ecd;
-        int8_t dir = chassis_park_yaw_dir;
+        int16_t target = chassis_state.park_yaw_ecd;
+        int8_t dir = chassis_state.park_yaw_dir;
         int32_t d;
         float out;
         float out_lim = (cfg->park.out_lim < cfg->out_lim) ? cfg->park.out_lim : cfg->out_lim;
 
         if ((target < 0) || (target >= GIMBAL_ENC_RANGE) || ((dir != 1) && (dir != -1)) ||
             (dir != chassis_cfg.yaw_ecd_dir)) { return NAN; }
-        if (yaw_park_active == 0U) { gimbal_yaw_reset(); yaw_park_active = 1U; }
+        if (gimbal_state.yaw_park_active == 0U) { gimbal_yaw_reset(); gimbal_state.yaw_park_active = 1U; }
         d = (int32_t)target - (int32_t)raw;
         if (d > GIMBAL_ENC_HALF) { d -= GIMBAL_ENC_RANGE; }
         if (d < -GIMBAL_ENC_HALF) { d += GIMBAL_ENC_RANGE; }
-        yaw_park_err = (float)dir * (float)d * (2.0f * GIMBAL_PI / (float)GIMBAL_ENC_RANGE);
+        gimbal_state.yaw_park_err = (float)dir * (float)d * (2.0f * GIMBAL_PI / (float)GIMBAL_ENC_RANGE);
         yaw_tgt = yaw_imu_lpf; /* 诊断贴当前值，退出时不追赶驻车期间的IMU漂移。 */
-        yaw_err = yaw_park_err;
+        yaw_err = gimbal_state.yaw_park_err;
         yaw_omega_ff = 0.0f;
-        yaw_omega_ref = cfg->park.kp_ang * yaw_park_err;
+        yaw_omega_ref = cfg->park.kp_ang * gimbal_state.yaw_park_err;
         if (yaw_omega_ref > cfg->park.speed_max) { yaw_omega_ref = cfg->park.speed_max; }
         if (yaw_omega_ref < -cfg->park.speed_max) { yaw_omega_ref = -cfg->park.speed_max; }
         yaw_omega_fb = imu_gyro_yaw;
@@ -358,7 +361,7 @@ static float gimbal_yaw_operate(const gimbal_yaw_cfg_t *cfg, int16_t raw)
         yaw_out = out;
         return out;
     }
-    if (yaw_park_active != 0U) { gimbal_yaw_reset(); }
+    if (gimbal_state.yaw_park_active != 0U) { gimbal_yaw_reset(); }
     return gimbal_yaw_control(cfg);
 }
 
@@ -368,7 +371,7 @@ static int32_t gimbal_yaw_home_abs_error(int16_t raw, int16_t target, int8_t dir
     int32_t d = (int32_t)target - (int32_t)raw;
     if (d > GIMBAL_ENC_HALF) { d -= GIMBAL_ENC_RANGE; }
     if (d < -GIMBAL_ENC_HALF) { d += GIMBAL_ENC_RANGE; }
-    yaw_home_err = (float)dir * (float)d * (2.0f * GIMBAL_PI / (float)GIMBAL_ENC_RANGE);
+    gimbal_state.home_err = (float)dir * (float)d * (2.0f * GIMBAL_PI / (float)GIMBAL_ENC_RANGE);
     return (d < 0) ? -d : d;
 }
 
@@ -381,12 +384,12 @@ static uint8_t gimbal_yaw_home_settled(uint8_t in_window, uint32_t now, uint32_t
     if (in_window == 0U)
     {
         settling = 0U;
-        yaw_home_stable_ms = 0U;
+        gimbal_state.home_stable_ms = 0U;
         return 0U;
     }
     if (settling == 0U) { stable_start_ms = now; settling = 1U; }
-    yaw_home_stable_ms = now - stable_start_ms;
-    return (yaw_home_stable_ms >= settle_ms) ? 1U : 0U;
+    gimbal_state.home_stable_ms = now - stable_start_ms;
+    return (gimbal_state.home_stable_ms >= settle_ms) ? 1U : 0U;
 }
 
 /* WAIT 不计超时；自动 RUN 只有一次机会，超时退出自动控制并保留告警。
@@ -406,7 +409,7 @@ static float gimbal_yaw_startup_control(const gimbal_yaw_cfg_t *yaw_cfg,
     float out_lim;
     float out;
 
-    if (yaw_home_state == GIMBAL_YAW_HOME_DONE)
+    if (gimbal_state.home_state == GIMBAL_YAW_HOME_DONE)
     {
         if (allowed != 0U) { return gimbal_yaw_operate(yaw_cfg, raw); }
         gimbal_yaw_reset();
@@ -422,31 +425,31 @@ static float gimbal_yaw_startup_control(const gimbal_yaw_cfg_t *yaw_cfg,
         !gimbal_range_valid(yaw_out_lim, 0.0f, GIMBAL_COMMAND_MAX) || (yaw_out_lim <= 0.0f) ||
         (cfg.tolerance_ecd == 0U) || (cfg.tolerance_ecd >= GIMBAL_ENC_HALF) ||
         (cfg.settle_ms == 0U) || (cfg.timeout_ms <= cfg.settle_ms) ||
-        (((yaw_home_state == GIMBAL_YAW_HOME_RUN) ||
-          ((yaw_home_state == GIMBAL_YAW_HOME_FAULT) &&
-           (yaw_home_fault == GIMBAL_YAW_HOME_FAULT_TIMEOUT))) &&
+        (((gimbal_state.home_state == GIMBAL_YAW_HOME_RUN) ||
+          ((gimbal_state.home_state == GIMBAL_YAW_HOME_FAULT) &&
+           (gimbal_state.home_fault == GIMBAL_YAW_HOME_FAULT_TIMEOUT))) &&
          ((zero != target_ecd) || (dir != ecd_dir))))
     {
-        yaw_home_fault = GIMBAL_YAW_HOME_FAULT_CONFIG;
-        yaw_home_state = GIMBAL_YAW_HOME_FAULT;
+        gimbal_state.home_fault = GIMBAL_YAW_HOME_FAULT_CONFIG;
+        gimbal_state.home_state = GIMBAL_YAW_HOME_FAULT;
     }
 
-    if (yaw_home_state == GIMBAL_YAW_HOME_FAULT)
+    if (gimbal_state.home_state == GIMBAL_YAW_HOME_FAULT)
     {
         float stick = input_axis(INPUT_AXIS_GIMBAL_YAW);
 
-        if ((yaw_home_fault != GIMBAL_YAW_HOME_FAULT_TIMEOUT) || (allowed == 0U))
+        if ((gimbal_state.home_fault != GIMBAL_YAW_HOME_FAULT_TIMEOUT) || (allowed == 0U))
         {
-            yaw_home_manual_ready = 0U;
+            gimbal_state.home_manual_ready = 0U;
             (void)gimbal_yaw_home_settled(0U, now, cfg.settle_ms);
             gimbal_yaw_reset();
             return 0.0f;
         }
-        if (yaw_home_manual_ready == 0U)
+        if (gimbal_state.home_manual_ready == 0U)
         {
             gimbal_yaw_reset();
             (void)gimbal_yaw_home_settled(0U, now, cfg.settle_ms);
-            if (stick == 0.0f) { yaw_home_manual_ready = 1U; }
+            if (stick == 0.0f) { gimbal_state.home_manual_ready = 1U; }
             return 0.0f;
         }
         abs_d = gimbal_yaw_home_abs_error(raw, target_ecd, ecd_dir);
@@ -454,55 +457,55 @@ static float gimbal_yaw_startup_control(const gimbal_yaw_cfg_t *yaw_cfg,
                                    (fabsf(imu_gyro_yaw) <= cfg.omega_tolerance) && (stick == 0.0f)),
                                    now, cfg.settle_ms) != 0U)
         {
-            yaw_home_state = GIMBAL_YAW_HOME_DONE;
-            yaw_home_fault = GIMBAL_YAW_HOME_FAULT_NONE;
-            yaw_home_manual_ready = 0U;
+            gimbal_state.home_state = GIMBAL_YAW_HOME_DONE;
+            gimbal_state.home_fault = GIMBAL_YAW_HOME_FAULT_NONE;
+            gimbal_state.home_manual_ready = 0U;
             gimbal_yaw_reset();
             return 0.0f;
         }
         return gimbal_yaw_operate(yaw_cfg, raw);
     }
 
-    if (yaw_home_state == GIMBAL_YAW_HOME_RUN)
+    if (gimbal_state.home_state == GIMBAL_YAW_HOME_RUN)
     {
-        yaw_home_elapsed_ms = now - start_ms;
-        if (yaw_home_elapsed_ms >= cfg.timeout_ms)
+        gimbal_state.home_elapsed_ms = now - start_ms;
+        if (gimbal_state.home_elapsed_ms >= cfg.timeout_ms)
         {
-            yaw_home_fault = GIMBAL_YAW_HOME_FAULT_TIMEOUT;
-            yaw_home_state = GIMBAL_YAW_HOME_FAULT;
+            gimbal_state.home_fault = GIMBAL_YAW_HOME_FAULT_TIMEOUT;
+            gimbal_state.home_state = GIMBAL_YAW_HOME_FAULT;
         }
     }
-    if ((allowed == 0U) || (yaw_home_state == GIMBAL_YAW_HOME_FAULT))
+    if ((allowed == 0U) || (gimbal_state.home_state == GIMBAL_YAW_HOME_FAULT))
     {
-        yaw_home_manual_ready = 0U;
+        gimbal_state.home_manual_ready = 0U;
         (void)gimbal_yaw_home_settled(0U, now, cfg.settle_ms);
         gimbal_yaw_reset();
         return 0.0f;
     }
 
-    if (yaw_home_state == GIMBAL_YAW_HOME_WAIT)
+    if (gimbal_state.home_state == GIMBAL_YAW_HOME_WAIT)
     {
         start_ms = now;
         target_ecd = zero;
         ecd_dir = dir;
-        yaw_home_elapsed_ms = 0U;
-        yaw_home_state = GIMBAL_YAW_HOME_RUN;
+        gimbal_state.home_elapsed_ms = 0U;
+        gimbal_state.home_state = GIMBAL_YAW_HOME_RUN;
         gimbal_yaw_reset();
     }
     abs_d = gimbal_yaw_home_abs_error(raw, target_ecd, ecd_dir);
     if (gimbal_yaw_home_settled((uint8_t)((abs_d <= cfg.tolerance_ecd) &&
                                (fabsf(imu_gyro_yaw) <= cfg.omega_tolerance)), now, cfg.settle_ms) != 0U)
     {
-        yaw_home_state = GIMBAL_YAW_HOME_DONE;
+        gimbal_state.home_state = GIMBAL_YAW_HOME_DONE;
         gimbal_yaw_reset();
         return 0.0f;
     }
 
     /* 进入到位窗口后只制动；回正期间不采纳摇杆、不累计旧位置目标。 */
     yaw_tgt = yaw_imu_lpf;
-    yaw_err = yaw_home_err;
+    yaw_err = gimbal_state.home_err;
     yaw_omega_ff = 0.0f;
-    yaw_omega_ref = (abs_d <= cfg.tolerance_ecd) ? 0.0f : (cfg.kp_ang * yaw_home_err);
+    yaw_omega_ref = (abs_d <= cfg.tolerance_ecd) ? 0.0f : (cfg.kp_ang * gimbal_state.home_err);
     if ((yaw_omega_ref > 0.0f) && (yaw_omega_ref < cfg.speed_min)) { yaw_omega_ref = cfg.speed_min; }
     if ((yaw_omega_ref < 0.0f) && (yaw_omega_ref > -cfg.speed_min)) { yaw_omega_ref = -cfg.speed_min; }
     if (yaw_omega_ref > cfg.speed_max) { yaw_omega_ref = cfg.speed_max; }
@@ -588,8 +591,8 @@ void gimbal_run(void)
     if (enabled > 1U) { yaw_inhibit |= GIMBAL_INHIBIT_CONFIG; pitch_inhibit |= GIMBAL_INHIBIT_CONFIG; }
     if (gimbal_yaw_config_valid(&cfg.yaw) == 0U) { yaw_inhibit |= GIMBAL_INHIBIT_CONFIG; }
     if (gimbal_pitch_config_valid(&cfg.pitch) == 0U) { pitch_inhibit |= GIMBAL_INHIBIT_CONFIG; }
-    if ((yaw_home_state < GIMBAL_YAW_HOME_WAIT) || (yaw_home_state > GIMBAL_YAW_HOME_FAULT) ||
-        (yaw_home_fault < GIMBAL_YAW_HOME_FAULT_NONE) || (yaw_home_fault > GIMBAL_YAW_HOME_FAULT_TIMEOUT))
+    if ((gimbal_state.home_state < GIMBAL_YAW_HOME_WAIT) || (gimbal_state.home_state > GIMBAL_YAW_HOME_FAULT) ||
+        (gimbal_state.home_fault < GIMBAL_YAW_HOME_FAULT_NONE) || (gimbal_state.home_fault > GIMBAL_YAW_HOME_FAULT_TIMEOUT))
     {
         yaw_inhibit |= GIMBAL_INHIBIT_CONFIG;
     }
@@ -610,8 +613,8 @@ void gimbal_run(void)
     {
         pitch_inhibit |= GIMBAL_INHIBIT_FEEDBACK;
     }
-    yaw_feedback_age_ms = yaw_age;
-    pitch_feedback_age_ms = pitch_age;
+    gimbal_state.yaw_age_ms = yaw_age;
+    gimbal_state.pitch_age_ms = pitch_age;
     out = gimbal_yaw_startup_control(&cfg.yaw, raw, now, (uint8_t)(yaw_inhibit == 0U));
     if (!isfinite(out))
     {
@@ -621,7 +624,7 @@ void gimbal_run(void)
     }
     if (out >  GIMBAL_COMMAND_MAX) { out =  GIMBAL_COMMAND_MAX; }
     if (out < -GIMBAL_COMMAND_MAX) { out = -GIMBAL_COMMAND_MAX; }
-    yaw_control_inhibit = yaw_inhibit;
+    gimbal_state.yaw_inhibit = yaw_inhibit;
     motor_gimbal_send_yaw((int16_t)out);     
 
     if (pitch_inhibit == 0U)
@@ -645,6 +648,6 @@ void gimbal_run(void)
     }
     if (out >  GIMBAL_COMMAND_MAX) { out =  GIMBAL_COMMAND_MAX; }
     if (out < -GIMBAL_COMMAND_MAX) { out = -GIMBAL_COMMAND_MAX; }
-    pitch_control_inhibit = pitch_inhibit;
+    gimbal_state.pitch_inhibit = pitch_inhibit;
     motor_gimbal_send_pitch((int16_t)out);//同上
 }
