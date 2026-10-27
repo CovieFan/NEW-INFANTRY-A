@@ -83,7 +83,10 @@ static uint8_t gimbal_yaw_config_valid(const gimbal_yaw_cfg_t *cfg)
         gimbal_range_valid(cfg->w_ref_lim, 0.0f, GIMBAL_SPEED_MAX) && (cfg->w_ref_lim > 0.0f) &&
         gimbal_range_valid(cfg->int_lim, 0.0f, GIMBAL_INTEGRAL_MAX) &&
         gimbal_range_valid(cfg->tgt_rate, 0.0f, GIMBAL_PI) &&
-        gimbal_range_valid(cfg->out_lim, 0.0f, GIMBAL_COMMAND_MAX) && (cfg->out_lim > 0.0f));
+        gimbal_range_valid(cfg->out_lim, 0.0f, GIMBAL_COMMAND_MAX) && (cfg->out_lim > 0.0f) &&
+        gimbal_range_valid(cfg->park.kp_ang, 0.0f, GIMBAL_GAIN_MAX) && (cfg->park.kp_ang > 0.0f) &&
+        gimbal_range_valid(cfg->park.speed_max, 0.0f, GIMBAL_SPEED_MAX) && (cfg->park.speed_max > 0.0f) &&
+        gimbal_range_valid(cfg->park.out_lim, 0.0f, GIMBAL_COMMAND_MAX) && (cfg->park.out_lim > 0.0f));
 }
 
 static uint8_t gimbal_pitch_config_valid(const gimbal_pitch_cfg_t *cfg)
@@ -161,6 +164,7 @@ volatile gimbal_cfg_t gimbal_cfg =
             .settle_ms = 200U,
             .timeout_ms = 8000U,
         },
+        .park = { .kp_ang = 5.0f, .speed_max = 0.5f, .out_lim = 3000.0f },
     },
     .pitch =
     {
@@ -195,12 +199,16 @@ volatile uint8_t  yaw_control_inhibit = 0U;
 volatile uint8_t  pitch_control_inhibit = 0U;
 volatile uint32_t yaw_feedback_age_ms = UINT32_MAX;
 volatile uint32_t pitch_feedback_age_ms = UINT32_MAX;
+volatile uint8_t  yaw_park_active = 0U;
+volatile float    yaw_park_err = 0.0f;
 
 /* 重新贴合 IMU 目标，不改回正完成标志，防恢复时追赶旧目标。 */
 static void gimbal_yaw_reset(void)
 {
     pid_reset(&pid_yaw);
     yaw_ready = 0U;
+    yaw_park_active = 0U;
+    yaw_park_err = 0.0f;
     angle_rebased = 0U;
     yaw_tgt = yaw_imu_lpf;
     yaw_err = 0.0f;
@@ -318,6 +326,42 @@ static float gimbal_yaw_control(const gimbal_yaw_cfg_t *cfg)
     return out;
 }
 
+/* 正常接管与驻车共用原速度环；驻车位置反馈只看锁存的相对编码器角。 */
+static float gimbal_yaw_operate(const gimbal_yaw_cfg_t *cfg, int16_t raw)
+{
+    if (chassis_park_state == CHASSIS_PARK_HOLD)
+    {
+        int16_t target = chassis_park_yaw_ecd;
+        int8_t dir = chassis_park_yaw_dir;
+        int32_t d;
+        float out;
+        float out_lim = (cfg->park.out_lim < cfg->out_lim) ? cfg->park.out_lim : cfg->out_lim;
+
+        if ((target < 0) || (target >= GIMBAL_ENC_RANGE) || ((dir != 1) && (dir != -1)) ||
+            (dir != chassis_cfg.yaw_ecd_dir)) { return NAN; }
+        if (yaw_park_active == 0U) { gimbal_yaw_reset(); yaw_park_active = 1U; }
+        d = (int32_t)target - (int32_t)raw;
+        if (d > GIMBAL_ENC_HALF) { d -= GIMBAL_ENC_RANGE; }
+        if (d < -GIMBAL_ENC_HALF) { d += GIMBAL_ENC_RANGE; }
+        yaw_park_err = (float)dir * (float)d * (2.0f * GIMBAL_PI / (float)GIMBAL_ENC_RANGE);
+        yaw_tgt = yaw_imu_lpf; /* 诊断贴当前值，退出时不追赶驻车期间的IMU漂移。 */
+        yaw_err = yaw_park_err;
+        yaw_omega_ff = 0.0f;
+        yaw_omega_ref = cfg->park.kp_ang * yaw_park_err;
+        if (yaw_omega_ref > cfg->park.speed_max) { yaw_omega_ref = cfg->park.speed_max; }
+        if (yaw_omega_ref < -cfg->park.speed_max) { yaw_omega_ref = -cfg->park.speed_max; }
+        yaw_omega_fb = imu_gyro_yaw;
+        out = cfg->kp_w * (yaw_omega_ref - yaw_omega_fb);
+        if (!isfinite(out)) { return NAN; }
+        if (out > out_lim) { out = out_lim; }
+        if (out < -out_lim) { out = -out_lim; }
+        yaw_out = out;
+        return out;
+    }
+    if (yaw_park_active != 0U) { gimbal_yaw_reset(); }
+    return gimbal_yaw_control(cfg);
+}
+
 /* 更新诊断角差，返回编码器角差的绝对值。 */
 static int32_t gimbal_yaw_home_abs_error(int16_t raw, int16_t target, int8_t dir)
 {
@@ -364,7 +408,7 @@ static float gimbal_yaw_startup_control(const gimbal_yaw_cfg_t *yaw_cfg,
 
     if (yaw_home_state == GIMBAL_YAW_HOME_DONE)
     {
-        if (allowed != 0U) { return gimbal_yaw_control(yaw_cfg); }
+        if (allowed != 0U) { return gimbal_yaw_operate(yaw_cfg, raw); }
         gimbal_yaw_reset();
         return 0.0f;
     }
@@ -416,7 +460,7 @@ static float gimbal_yaw_startup_control(const gimbal_yaw_cfg_t *yaw_cfg,
             gimbal_yaw_reset();
             return 0.0f;
         }
-        return gimbal_yaw_control(yaw_cfg);
+        return gimbal_yaw_operate(yaw_cfg, raw);
     }
 
     if (yaw_home_state == GIMBAL_YAW_HOME_RUN)

@@ -43,6 +43,13 @@ typedef struct
 
 typedef struct
 {
+    float kp_ang;        /* 驻车相对编码器角差(rad) -> 目标角速度 */
+    float speed_max;     /* 扰动恢复速度上限，rad/s；不设最小速度 */
+    float out_lim;       /* 驻车命令上限，另受正常YAW限幅约束 */
+} gimbal_yaw_park_cfg_t;
+
+typedef struct
+{
     uint8_t speed_mode;    /* 1 = 速控；0 = 位控 */
     uint8_t omega_ff_en;   /* 位控：速度前馈开关 */
     float   kp_w;          /* 速度环 P：命令值 / (rad/s) */
@@ -55,6 +62,7 @@ typedef struct
     float   tgt_rate;      /* 位控：摇杆积分速率 (rad/tick) */
     float   out_lim;       
     gimbal_yaw_home_cfg_t home;
+    gimbal_yaw_park_cfg_t park;
 } gimbal_yaw_cfg_t;
 
 typedef struct
@@ -86,6 +94,8 @@ extern volatile uint8_t  yaw_control_inhibit;
 extern volatile uint8_t  pitch_control_inhibit;
 extern volatile uint32_t yaw_feedback_age_ms;
 extern volatile uint32_t pitch_feedback_age_ms;
+extern volatile uint8_t  yaw_park_active;
+extern volatile float    yaw_park_err; /* 相对锁存编码器角的最短误差，rad */
 
 void gimbal_run(void);
 

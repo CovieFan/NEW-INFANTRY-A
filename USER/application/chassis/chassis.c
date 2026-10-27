@@ -6,6 +6,7 @@
 #include "pid.h"
 #include "input.h"
 #include "gimbal.h"
+#include "bsp_imu.h"
 #include <math.h>
 
 #define CHASSIS_YAW_ENC_RANGE 8192L
@@ -37,6 +38,11 @@ volatile chassis_cfg_t chassis_cfg =
     .yaw_zero_ecd = 5500,     /* 实测：枪口与底盘正前方对齐时的编码器值 */
     .yaw_ecd_dir = +1,       /* 实测：枪口左转时编码器增加；直驱 */
     .yaw_timeout_ms = 100U,
+    .park =
+    {
+        .enable = 1U, .idle_ms = 3000U,
+        .stop_rpm = 10.0f, .settle_ms = 200U, .brake_timeout_ms = 3000U,
+    },
 };
 
 volatile float   dbg_vx  = 0.0f;
@@ -52,6 +58,13 @@ volatile uint8_t  chassis_wait_neutral = 1U;
 volatile uint8_t  chassis_follow_active = 0U;
 volatile float    chassis_translation_scale = 0.0f;
 volatile float    chassis_wz_applied = 0.0f;
+volatile chassis_park_state_e chassis_park_state = CHASSIS_PARK_DRIVE;
+volatile uint32_t chassis_park_idle_ms = 0U;
+volatile uint32_t chassis_park_brake_ms = 0U;
+volatile uint32_t chassis_park_stable_ms = 0U;
+volatile int16_t  chassis_park_yaw_ecd = -1;
+volatile int8_t   chassis_park_yaw_dir = 0;
+volatile chassis_park_fault_e chassis_park_fault = CHASSIS_PARK_FAULT_NONE;
 
 volatile float   pid_tar[4] = { 0, 0, 0, 0 };   /* Watch：四轮目标（前进为正） */
 volatile float   pid_fb [4] = { 0, 0, 0, 0 };   /* Watch：四轮反馈（前进为正） */
@@ -59,6 +72,124 @@ volatile float   pid_scale = 1.0f;
 volatile uint8_t pid_ok = 0U;
 
 static pid_t chassis_pid[4];
+static uint32_t park_idle_start_ms;
+static uint8_t park_idle_timing = 0U;
+static uint32_t park_brake_start_ms;
+static uint32_t park_stable_start_ms;
+static uint8_t park_settling = 0U;
+
+static void chassis_park_reset(void)
+{
+    chassis_park_state = CHASSIS_PARK_DRIVE;
+    chassis_park_idle_ms = 0U;
+    chassis_park_brake_ms = 0U;
+    chassis_park_stable_ms = 0U;
+    chassis_park_yaw_ecd = -1;
+    chassis_park_yaw_dir = 0;
+    chassis_park_fault = CHASSIS_PARK_FAULT_NONE;
+    park_idle_timing = 0U;
+    park_settling = 0U;
+}
+
+static uint8_t chassis_park_input_active(void)
+{
+    return (uint8_t)((remote.sw2 == INPUT_SW_MID) ||
+        (input_axis(INPUT_AXIS_CHASSIS_X) != 0.0f) || (input_axis(INPUT_AXIS_CHASSIS_Y) != 0.0f) ||
+        (input_axis(INPUT_AXIS_GIMBAL_YAW) != 0.0f) || (input_axis(INPUT_AXIS_GIMBAL_PITCH) != 0.0f));
+}
+
+static uint8_t chassis_park_wheels_online(uint32_t now)
+{
+    uint8_t i;
+    for (i = 0U; i < 4U; i++)
+    {
+        uint32_t last_ms = motor_chassis[i].fb.last_ms;
+        if ((last_ms == 0U) || ((now - last_ms) > 100U)) { return 0U; }
+    }
+    return 1U;
+}
+
+static uint8_t chassis_park_wheels_stopped(float stop_rpm)
+{
+    uint8_t i;
+    for (i = 0U; i < 4U; i++)
+    {
+        if (fabsf((float)motor_chassis[i].fb.speed_rpm) > stop_rpm) { return 0U; }
+    }
+    return 1U;
+}
+
+/* 仅决定正常驾驶/驻车；输出仍由现有轮速闭环计算。 */
+static void chassis_park_update(const chassis_cfg_t *cfg, uint32_t now)
+{
+    uint8_t manual_ready = (uint8_t)((yaw_home_state == GIMBAL_YAW_HOME_DONE) ||
+        ((yaw_home_state == GIMBAL_YAW_HOME_FAULT) &&
+         (yaw_home_fault == GIMBAL_YAW_HOME_FAULT_TIMEOUT) && (yaw_home_manual_ready != 0U)));
+
+    if ((cfg->park.enable == 0U) || (manual_ready == 0U) ||
+        (remote.online == 0U) || (remote.last_ms == 0U) || ((now - remote.last_ms) > 150U) ||
+        (chassis_yaw_valid == 0U) || (chassis_park_input_active() != 0U))
+    {
+        chassis_park_reset();
+        return;
+    }
+    if (((chassis_park_state == CHASSIS_PARK_BRAKE) || (chassis_park_state == CHASSIS_PARK_HOLD)) &&
+        (chassis_park_wheels_online(now) == 0U))
+    {
+        chassis_park_fault = CHASSIS_PARK_FAULT_WHEEL;
+        chassis_park_state = CHASSIS_PARK_FAULT;
+        return;
+    }
+    if ((gimbal_cfg.enable != 1U) || (imu_online == 0U) || (yaw_control_inhibit != 0U))
+    {
+        if ((chassis_park_state == CHASSIS_PARK_BRAKE) || (chassis_park_state == CHASSIS_PARK_HOLD))
+        {
+            /* YAW短暂失效只撤销角度保持，不能无操作就重新放开底盘跟随。 */
+            chassis_park_state = CHASSIS_PARK_BRAKE;
+            chassis_park_yaw_ecd = -1;
+            chassis_park_yaw_dir = 0;
+            park_settling = 0U;
+            chassis_park_stable_ms = 0U;
+            chassis_park_brake_ms = 0U;
+            park_brake_start_ms = now;
+        }
+        else { chassis_park_reset(); }
+        return;
+    }
+    if (park_idle_timing == 0U) { park_idle_start_ms = now; park_idle_timing = 1U; }
+    chassis_park_idle_ms = now - park_idle_start_ms;
+    if ((chassis_park_state == CHASSIS_PARK_DRIVE) && (chassis_park_idle_ms >= cfg->park.idle_ms))
+    {
+        chassis_park_state = CHASSIS_PARK_BRAKE;
+        park_brake_start_ms = now;
+    }
+    if ((chassis_park_state != CHASSIS_PARK_DRIVE) && (chassis_park_wheels_online(now) == 0U))
+    {
+        chassis_park_fault = CHASSIS_PARK_FAULT_WHEEL;
+        chassis_park_state = CHASSIS_PARK_FAULT;
+        return;
+    }
+    if (chassis_park_state != CHASSIS_PARK_BRAKE) { return; }
+    chassis_park_brake_ms = now - park_brake_start_ms;
+    if (chassis_park_wheels_stopped(cfg->park.stop_rpm) != 0U)
+    {
+        if (park_settling == 0U) { park_stable_start_ms = now; park_settling = 1U; }
+        chassis_park_stable_ms = now - park_stable_start_ms;
+        if (chassis_park_stable_ms >= cfg->park.settle_ms)
+        {
+            chassis_park_yaw_ecd = motor_gimbal[GIMBAL_AXIS_YAW].fb.angle;
+            chassis_park_yaw_dir = cfg->yaw_ecd_dir;
+            chassis_park_state = CHASSIS_PARK_HOLD;
+        }
+    }
+    else { park_settling = 0U; chassis_park_stable_ms = 0U; }
+    if ((chassis_park_state != CHASSIS_PARK_HOLD) &&
+        (chassis_park_brake_ms >= cfg->park.brake_timeout_ms))
+    {
+        chassis_park_fault = CHASSIS_PARK_FAULT_TIMEOUT;
+        chassis_park_state = CHASSIS_PARK_FAULT;
+    }
+}
 
 static uint8_t chassis_range_valid(float value, float low, float high)
 {
@@ -67,7 +198,12 @@ static uint8_t chassis_range_valid(float value, float low, float high)
 
 static uint8_t chassis_pid_config_valid(const chassis_cfg_t *cfg)
 {
-    return (uint8_t)((cfg->follow_en <= 1U) &&
+    return (uint8_t)((cfg->follow_en <= 1U) && (cfg->park.enable <= 1U) &&
+        ((cfg->park.enable == 0U) || ((cfg->park.idle_ms > 0U) && (cfg->park.idle_ms <= UINT32_MAX / 2U) &&
+         chassis_range_valid(cfg->park.stop_rpm, 0.0f, CHASSIS_COMMAND_MAX) &&
+         (cfg->park.settle_ms > 0U) && (cfg->park.brake_timeout_ms >= cfg->park.settle_ms) &&
+         (cfg->park.brake_timeout_ms <= UINT32_MAX / 2U))) &&
+        (chassis_park_state >= CHASSIS_PARK_DRIVE) && (chassis_park_state <= CHASSIS_PARK_FAULT) &&
         chassis_range_valid(cfg->max_rpm, 0.0f, CHASSIS_COMMAND_MAX) && (cfg->max_rpm > 0.0f) &&
         chassis_range_valid(cfg->spin_fixed_rpm, -CHASSIS_COMMAND_MAX, CHASSIS_COMMAND_MAX) &&
         chassis_range_valid(cfg->kp, 0.0f, CHASSIS_GAIN_MAX) &&
@@ -84,6 +220,7 @@ static void chassis_stop(void)
     uint8_t i;
 
     chassis_wait_neutral = 1U;
+    chassis_park_reset();
     chassis_follow_active = 0U;
     chassis_translation_scale = 0.0f;
     chassis_wz_applied = 0.0f;
@@ -104,6 +241,14 @@ static void chassis_fail(chassis_control_fault_e fault)
 {
     chassis_control_fault = fault;
     chassis_stop();
+}
+
+static void chassis_park_fault_stop(chassis_park_fault_e fault, uint32_t elapsed_ms)
+{
+    chassis_fail(CHASSIS_CONTROL_FAULT_PARK);
+    chassis_park_state = CHASSIS_PARK_FAULT; /* 保留故障，不能无操作就重新启动跟随。 */
+    chassis_park_fault = fault;
+    chassis_park_brake_ms = elapsed_ms;
 }
 
 static void chassis_yaw_update(const chassis_cfg_t *cfg)
@@ -274,6 +419,11 @@ static void chassis_pid_run(const chassis_cfg_t *cfg)
         chassis_fail(CHASSIS_CONTROL_FAULT_CONFIG);
         return;
     }
+    if (chassis_park_state == CHASSIS_PARK_FAULT)
+    {
+        if ((cfg->park.enable == 0U) || (chassis_park_input_active() != 0U)) { chassis_park_reset(); }
+        else { chassis_park_fault_stop(chassis_park_fault, chassis_park_brake_ms); return; }
+    }
     if (chassis_wait_neutral != 0U)
     {
         chassis_stop();
@@ -282,6 +432,19 @@ static void chassis_pid_run(const chassis_cfg_t *cfg)
             chassis_wait_neutral = 0U;
         }
         return;
+    }
+
+    chassis_park_update(cfg, HAL_GetTick());
+    if (chassis_park_state == CHASSIS_PARK_FAULT)
+    {
+        chassis_park_fault_stop(chassis_park_fault, chassis_park_brake_ms);
+        return;
+    }
+    if (chassis_park_state != CHASSIS_PARK_DRIVE)
+    {
+        x_norm = 0.0f;
+        y_norm = 0.0f;
+        follow_on = 0U;
     }
 
     /* 输入参考系中的平移指令，沿用现有转子 rpm 尺度。 */
@@ -455,6 +618,7 @@ void chassis_run(void)
     switch (mode)
     {
     case CHASSIS_MODE_RC:
+        chassis_park_reset();
         chassis_yaw_valid = 0U;
         chassis_yaw_rel_rad = 0.0f;
         chassis_yaw_age_ms = UINT32_MAX;
