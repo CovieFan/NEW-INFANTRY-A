@@ -46,14 +46,14 @@ typedef struct
     uint8_t speed_mode;    /* 1 = 速控；0 = 位控 */
     uint8_t omega_ff_en;   /* 位控：速度前馈开关 */
     float   kp_w;          /* 速度环 P：命令值 / (rad/s) */
-    float   kick;          /* 起步电流（静摩擦补偿） */
-    float   speed_max;     /* 速控：满杆目标角速度 (rad/s) */
-    float   kp_ang;        /* 位控角度环 P：(rad/s)/rad */
-    float   ki_ang;        /* 位控角度环 I */
-    float   w_ref_lim;     /* 期望角速度限幅 (rad/s) */
-    float   int_lim;       /* 角度环积分限幅 */
+    float   kick;          /* 起步电流*/
+    float   speed_max;     
+    float   kp_ang;        
+    float   ki_ang;        
+    float   w_ref_lim;     
+    float   int_lim;      
     float   tgt_rate;      /* 位控：摇杆积分速率 (rad/tick) */
-    float   out_lim;       /* 输出限幅（0x1FF 量程 +-25000） */
+    float   out_lim;       
     gimbal_yaw_home_cfg_t home;
 } gimbal_yaw_cfg_t;
 
@@ -78,7 +78,7 @@ typedef struct
 extern volatile gimbal_cfg_t gimbal_cfg;
 extern volatile gimbal_yaw_home_state_e yaw_home_state;
 extern volatile gimbal_yaw_home_fault_e yaw_home_fault;
-extern volatile float    yaw_home_err;        /* 最短回正角差，rad，左转为正 */
+extern volatile float    yaw_home_err;        /*最短回正角差，rad，左转为正 */
 extern volatile uint32_t yaw_home_elapsed_ms;
 extern volatile uint32_t yaw_home_stable_ms;
 extern volatile uint8_t  yaw_home_manual_ready; /* 超时后 YAW 杆归中，允许手动接管 */

@@ -62,6 +62,8 @@ extern volatile uint8_t  chassis_wait_neutral; /* 1 = 等待平移归中且关�
 extern volatile uint8_t  chassis_follow_active; /* 1 = 自动跟随正在给出非零转向目标 */
 extern volatile float    dbg_vx_input;        /* 转换前指令；PID 模式单位为转子 rpm */
 extern volatile float    dbg_vy_input;
+extern volatile float    chassis_translation_scale; /* PID平移实际缩放比例；停止/RC模式为0 */
+extern volatile float    chassis_wz_applied;        /* 四轮目标反算的旋转分量，转子rpm尺度 */
 
 void chassis_run(void);
 

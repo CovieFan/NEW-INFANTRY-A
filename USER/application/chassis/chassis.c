@@ -26,12 +26,12 @@ volatile chassis_control_fault_e chassis_control_fault = CHASSIS_CONTROL_FAULT_N
 volatile chassis_cfg_t chassis_cfg =
 {
     .fwd_cur = 2500, .strafe_cur = 2500, .spin_cur = 2500, .cur_max = 4500,
-    .spin_fixed_rpm = 1000.0f,
+    .spin_fixed_rpm = 2000.0f,
     .follow_en = 1U,
-    .follow_kp = 1500.0f,
-    .follow_max_rpm = 1000.0f,
+    .follow_kp = 3000.0f,
+    .follow_max_rpm = 2000.0f,
     .follow_deadband_rad = 0.052359878f, /* 3 * pi / 180 = 0.05236 rad */
-    .max_rpm = 3000.0f, .kp = 15.0f, .ki = 0.0f, .kd = 0.0f,
+    .max_rpm = 5000.0f, .kp = 15.0f, .ki = 0.0f, .kd = 0.0f,
     .out_lim = 3000.0f, .int_lim = 3000.0f,
     .move_frame = CHASSIS_FRAME_GIMBAL,
     .yaw_zero_ecd = 5500,     /* 实测：枪口与底盘正前方对齐时的编码器值 */
@@ -50,6 +50,8 @@ volatile uint32_t chassis_yaw_age_ms = UINT32_MAX;
 volatile uint8_t  chassis_yaw_valid = 0U;
 volatile uint8_t  chassis_wait_neutral = 1U;
 volatile uint8_t  chassis_follow_active = 0U;
+volatile float    chassis_translation_scale = 0.0f;
+volatile float    chassis_wz_applied = 0.0f;
 
 volatile float   pid_tar[4] = { 0, 0, 0, 0 };   /* Watch：四轮目标（前进为正） */
 volatile float   pid_fb [4] = { 0, 0, 0, 0 };   /* Watch：四轮反馈（前进为正） */
@@ -83,6 +85,8 @@ static void chassis_stop(void)
 
     chassis_wait_neutral = 1U;
     chassis_follow_active = 0U;
+    chassis_translation_scale = 0.0f;
+    chassis_wz_applied = 0.0f;
     dbg_vx_input = 0.0f; dbg_vy_input = 0.0f;
     dbg_vx = 0.0f; dbg_vy = 0.0f; dbg_wz = 0.0f;
     pid_scale = 0.0f;
@@ -216,6 +220,7 @@ static void chassis_pid_run(const chassis_cfg_t *cfg)
     int16_t cur[4] = { 0, 0, 0, 0 };
     float   maxabs = 0.0f;
     float   scale  = 1.0f;
+    float   move_scale = 1.0f;
     uint8_t sw2 = remote.sw2;
     uint8_t spin_on = (sw2 == INPUT_SW_MID) ? 1U : 0U;
     uint8_t follow_on = (uint8_t)((spin_on == 0U) && (cfg->follow_en != 0U) &&
@@ -312,13 +317,30 @@ static void chassis_pid_run(const chassis_cfg_t *cfg)
     }
     dbg_vx = vx; dbg_vy = vy; dbg_wz = wz;
 
+    if (spin_on != 0U)
+    {
+        float move_rpm = fabsf(vx) + fabsf(vy);
+        float available_rpm = cfg->max_rpm - fabsf(wz);
+
+        /* 自转本身已超轮速能力，不能假装仍能保持该目标。 */
+        if (available_rpm < 0.0f) { chassis_fail(CHASSIS_CONTROL_FAULT_CONFIG); return; }
+        if (!isfinite(move_rpm)) { chassis_fail(CHASSIS_CONTROL_FAULT_NUMERIC); return; }
+        /* 先给自转预留轮速，余量只缩平移，保持驾驶方向。 */
+        if (move_rpm > available_rpm)
+        {
+            move_scale = available_rpm / move_rpm;
+            vx *= move_scale;
+            vy *= move_scale;
+        }
+    }
+
     /* 逆运动学 -> 四轮目标（0~3 = FR/FL/RL/RR） */
     tgt[0] = vx + vy + wz;    /* FR */
     tgt[1] = vx - vy - wz;    /* FL */
     tgt[2] = vx + vy - wz;    /* RL */
     tgt[3] = vx - vy + wz;    /* RR */
 
-    /* 超速时四轮等比缩放：逐轮独立限幅会把方向扭歪 */
+    /* 普通驾驶仍等比缩放；小陀螺已预留旋转量，不能再一起缩小。 */
     for (i = 0U; i < 4U; i++)
     {
         if (!isfinite(tgt[i])) { chassis_fail(CHASSIS_CONTROL_FAULT_NUMERIC); return; }
@@ -327,10 +349,24 @@ static void chassis_pid_run(const chassis_cfg_t *cfg)
     }
     if (maxabs > cfg->max_rpm)
     {
-        scale = cfg->max_rpm / maxabs;
-        for (i = 0U; i < 4U; i++) { tgt[i] *= scale; }
+        if (spin_on == 0U)
+        {
+            scale = cfg->max_rpm / maxabs;
+            for (i = 0U; i < 4U; i++) { tgt[i] *= scale; }
+        }
+        else
+        {
+            /* 前面的分配已满足上限，此处仅收紧浮点舍入产生的边界越界。 */
+            for (i = 0U; i < 4U; i++)
+            {
+                if (tgt[i] > cfg->max_rpm) { tgt[i] = cfg->max_rpm; }
+                if (tgt[i] < -cfg->max_rpm) { tgt[i] = -cfg->max_rpm; }
+            }
+        }
     }
     pid_scale = scale;
+    chassis_translation_scale = move_scale * scale;
+    chassis_wz_applied = (tgt[0] - tgt[1] - tgt[2] + tgt[3]) * 0.25f;
 
     for (i = 0U; i < 4U; i++)
     {
@@ -378,6 +414,8 @@ void chassis_run(void)
     chassis_mode_e mode = chassis_mode;
     const chassis_cfg_t cfg = chassis_cfg;
     chassis_follow_active = 0U;
+    chassis_translation_scale = 0.0f;
+    chassis_wz_applied = 0.0f;
     chassis_control_fault = CHASSIS_CONTROL_FAULT_NONE;
 
     if ((mode != CHASSIS_MODE_STOP) && (mode != CHASSIS_MODE_RC) && (mode != CHASSIS_MODE_PID_TEST))
