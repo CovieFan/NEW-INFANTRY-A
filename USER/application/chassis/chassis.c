@@ -360,33 +360,17 @@ static void chassis_rc_run(const chassis_cfg_t *cfg)
     motor_chassis_send_current(cur);
 }
 
-static void chassis_pid_run(const chassis_cfg_t *cfg)
+/* PID驾驶当拍数据；不改变输入、计时或反馈的读取位置。 */
+typedef struct
 {
-    float   x_norm;
-    float   y_norm;
-    float   vx_input;
-    float   vy_input;
-    float   vx;
-    float   vy;
-    float   wz;
-    float   tgt[4];
-    int16_t cur[4] = { 0, 0, 0, 0 };
-    float   maxabs = 0.0f;
-    float   scale  = 1.0f;
-    float   move_scale = 1.0f;
-    uint8_t sw2 = remote.sw2;
-    uint8_t spin_on = (sw2 == INPUT_SW_MID) ? 1U : 0U;
-    uint8_t follow_on = (uint8_t)((spin_on == 0U) && (cfg->follow_en != 0U) &&
-                                (cfg->move_frame == CHASSIS_FRAME_GIMBAL));
+    float x_norm, y_norm;
+    float vx_input, vy_input, vx, vy, wz;
+    uint8_t sw2, spin_on, follow_on;
+} chassis_drive_t;
+
+static void chassis_pid_sync(const chassis_cfg_t *cfg)
+{
     uint8_t i;
-
-    /* 校验先于PID初始化、同步和目标计算。 */
-    if (chassis_pid_config_valid(cfg) == 0U)
-    {
-        chassis_fail(CHASSIS_CONTROL_FAULT_CONFIG);
-        return;
-    }
-
     if (chassis_state.pid_ok == 0U)
     {
         for (i = 0U; i < 4U; i++)
@@ -406,61 +390,80 @@ static void chassis_pid_run(const chassis_cfg_t *cfg)
         chassis_pid[i].integral_limit = cfg->int_lim;
     }
 
+}
+
+/* 含原有故障/归中/驻车处理；返回0时本拍已走相应停止路径。 */
+static uint8_t chassis_prepare_drive(const chassis_cfg_t *cfg, chassis_drive_t *drive)
+{
+    /* 校验先于PID初始化、同步和目标计算。 */
+    if (chassis_pid_config_valid(cfg) == 0U)
+    {
+        chassis_fail(CHASSIS_CONTROL_FAULT_CONFIG);
+        return 0U;
+    }
+
+    chassis_pid_sync(cfg);
+
     chassis_yaw_update(cfg);
     if ((remote.online == 0U) ||
-        ((sw2 != INPUT_SW_UP) && (sw2 != INPUT_SW_MID) && (sw2 != INPUT_SW_DOWN)) ||
+        ((drive->sw2 != INPUT_SW_UP) && (drive->sw2 != INPUT_SW_MID) && (drive->sw2 != INPUT_SW_DOWN)) ||
         ((cfg->move_frame != CHASSIS_FRAME_BODY) && (cfg->move_frame != CHASSIS_FRAME_GIMBAL)) ||
         ((cfg->move_frame == CHASSIS_FRAME_GIMBAL) && (chassis_state.yaw_valid == 0U)))
     {
         chassis_stop();
-        return;
+        return 0U;
     }
 
-    x_norm = input_axis(INPUT_AXIS_CHASSIS_X);
-    y_norm = input_axis(INPUT_AXIS_CHASSIS_Y);
-    if ((follow_on != 0U) &&
+    drive->x_norm = input_axis(INPUT_AXIS_CHASSIS_X);
+    drive->y_norm = input_axis(INPUT_AXIS_CHASSIS_Y);
+    if ((drive->follow_on != 0U) &&
         (!chassis_range_valid(cfg->follow_kp, 0.0f, CHASSIS_GAIN_MAX) || (cfg->follow_kp <= 0.0f) ||
          !chassis_range_valid(cfg->follow_max_rpm, 0.0f, CHASSIS_COMMAND_MAX) || (cfg->follow_max_rpm <= 0.0f) ||
          !isfinite(cfg->follow_deadband_rad) || (cfg->follow_deadband_rad < 0.0f) ||
          (cfg->follow_deadband_rad >= (CHASSIS_TWO_PI * 0.5f))))
     {
         chassis_fail(CHASSIS_CONTROL_FAULT_CONFIG);
-        return;
+        return 0U;
     }
     if (chassis_state.park_state == CHASSIS_PARK_FAULT)
     {
         if ((cfg->park.enable == 0U) || (chassis_park_input_active() != 0U)) { chassis_park_reset(); }
-        else { chassis_park_fault_stop(chassis_state.park_fault, chassis_state.park_brake_ms); return; }
+        else { chassis_park_fault_stop(chassis_state.park_fault, chassis_state.park_brake_ms); return 0U; }
     }
     if (chassis_state.wait_neutral != 0U)
     {
         chassis_stop();
-        if ((x_norm == 0.0f) && (y_norm == 0.0f) && (spin_on == 0U))
+        if ((drive->x_norm == 0.0f) && (drive->y_norm == 0.0f) && (drive->spin_on == 0U))
         {
             chassis_state.wait_neutral = 0U;
         }
-        return;
+        return 0U;
     }
 
     chassis_park_update(cfg, HAL_GetTick());
     if (chassis_state.park_state == CHASSIS_PARK_FAULT)
     {
         chassis_park_fault_stop(chassis_state.park_fault, chassis_state.park_brake_ms);
-        return;
+        return 0U;
     }
     if (chassis_state.park_state != CHASSIS_PARK_DRIVE)
     {
-        x_norm = 0.0f;
-        y_norm = 0.0f;
-        follow_on = 0U;
+        drive->x_norm = 0.0f;
+        drive->y_norm = 0.0f;
+        drive->follow_on = 0U;
     }
 
+    return 1U;
+}
+
+static void chassis_transform_move(const chassis_cfg_t *cfg, chassis_drive_t *drive)
+{
     /* 输入参考系中的平移指令，沿用现有转子 rpm 尺度。 */
-    vx_input = x_norm * cfg->max_rpm;
-    vy_input = y_norm * cfg->max_rpm;
-    chassis_state.dbg_vx_input = vx_input; chassis_state.dbg_vy_input = vy_input;
-    vx = vx_input;
-    vy = vy_input;
+    drive->vx_input = drive->x_norm * cfg->max_rpm;
+    drive->vy_input = drive->y_norm * cfg->max_rpm;
+    chassis_state.dbg_vx_input = drive->vx_input; chassis_state.dbg_vy_input = drive->vy_input;
+    drive->vx = drive->vx_input;
+    drive->vy = drive->vy_input;
     if (cfg->move_frame == CHASSIS_FRAME_GIMBAL)
     {
         float yaw_rel_rad = chassis_state.yaw_rel_rad;
@@ -468,59 +471,71 @@ static void chassis_pid_run(const chassis_cfg_t *cfg)
         float cos_yaw = cosf(yaw_rel_rad);
 
         /* 相对角左转为正；按现有底盘侧向约定用负角变换，避免左右镜像。 */
-        vx =  cos_yaw * vx_input + sin_yaw * vy_input;
-        vy = -sin_yaw * vx_input + cos_yaw * vy_input;
+        drive->vx =  cos_yaw * drive->vx_input + sin_yaw * drive->vy_input;
+        drive->vy = -sin_yaw * drive->vx_input + cos_yaw * drive->vy_input;
     }
+}
+
+static void chassis_select_rotation(const chassis_cfg_t *cfg, chassis_drive_t *drive)
+{
     /* 小陀螺优先；其余时候按实际角差跟随。
-       本车实测正 wz 使左正的相对角增大；跟随取负号，才会向零角差收敛。 */
-    wz = 0.0f;
-    if (spin_on != 0U)
+       本车实测正 drive->wz 使左正的相对角增大；跟随取负号，才会向零角差收敛。 */
+    drive->wz = 0.0f;
+    if (drive->spin_on != 0U)
     {
-        wz = cfg->spin_fixed_rpm;
+        drive->wz = cfg->spin_fixed_rpm;
     }
-    else if ((follow_on != 0U) &&
+    else if ((drive->follow_on != 0U) &&
              (fabsf(chassis_state.yaw_rel_rad) > cfg->follow_deadband_rad))
     {
-        wz = -cfg->follow_kp * chassis_state.yaw_rel_rad;
-        if (wz >  cfg->follow_max_rpm) { wz =  cfg->follow_max_rpm; }
-        if (wz < -cfg->follow_max_rpm) { wz = -cfg->follow_max_rpm; }
+        drive->wz = -cfg->follow_kp * chassis_state.yaw_rel_rad;
+        if (drive->wz >  cfg->follow_max_rpm) { drive->wz =  cfg->follow_max_rpm; }
+        if (drive->wz < -cfg->follow_max_rpm) { drive->wz = -cfg->follow_max_rpm; }
         chassis_state.follow_active = 1U;
     }
-    chassis_state.dbg_vx = vx; chassis_state.dbg_vy = vy; chassis_state.dbg_wz = wz;
+    chassis_state.dbg_vx = drive->vx; chassis_state.dbg_vy = drive->vy; chassis_state.dbg_wz = drive->wz;
 
-    if (spin_on != 0U)
+}
+
+static uint8_t chassis_allocate_wheels(const chassis_cfg_t *cfg, chassis_drive_t *drive, float tgt[4])
+{
+    float maxabs = 0.0f;
+    float scale = 1.0f;
+    float move_scale = 1.0f;
+    uint8_t i;
+    if (drive->spin_on != 0U)
     {
-        float move_rpm = fabsf(vx) + fabsf(vy);
-        float available_rpm = cfg->max_rpm - fabsf(wz);
+        float move_rpm = fabsf(drive->vx) + fabsf(drive->vy);
+        float available_rpm = cfg->max_rpm - fabsf(drive->wz);
 
         /* 自转本身已超轮速能力，不能假装仍能保持该目标。 */
-        if (available_rpm < 0.0f) { chassis_fail(CHASSIS_CONTROL_FAULT_CONFIG); return; }
-        if (!isfinite(move_rpm)) { chassis_fail(CHASSIS_CONTROL_FAULT_NUMERIC); return; }
+        if (available_rpm < 0.0f) { chassis_fail(CHASSIS_CONTROL_FAULT_CONFIG); return 0U; }
+        if (!isfinite(move_rpm)) { chassis_fail(CHASSIS_CONTROL_FAULT_NUMERIC); return 0U; }
         /* 先给自转预留轮速，余量只缩平移，保持驾驶方向。 */
         if (move_rpm > available_rpm)
         {
             move_scale = available_rpm / move_rpm;
-            vx *= move_scale;
-            vy *= move_scale;
+            drive->vx *= move_scale;
+            drive->vy *= move_scale;
         }
     }
 
     /* 逆运动学 -> 四轮目标（0~3 = FR/FL/RL/RR） */
-    tgt[0] = vx + vy + wz;    /* FR */
-    tgt[1] = vx - vy - wz;    /* FL */
-    tgt[2] = vx + vy - wz;    /* RL */
-    tgt[3] = vx - vy + wz;    /* RR */
+    tgt[0] = drive->vx + drive->vy + drive->wz;    /* FR */
+    tgt[1] = drive->vx - drive->vy - drive->wz;    /* FL */
+    tgt[2] = drive->vx + drive->vy - drive->wz;    /* RL */
+    tgt[3] = drive->vx - drive->vy + drive->wz;    /* RR */
 
     /* 普通驾驶仍等比缩放；小陀螺已预留旋转量，不能再一起缩小。 */
     for (i = 0U; i < 4U; i++)
     {
-        if (!isfinite(tgt[i])) { chassis_fail(CHASSIS_CONTROL_FAULT_NUMERIC); return; }
+        if (!isfinite(tgt[i])) { chassis_fail(CHASSIS_CONTROL_FAULT_NUMERIC); return 0U; }
         float a = (tgt[i] < 0.0f) ? -tgt[i] : tgt[i];
         if (a > maxabs) { maxabs = a; }
     }
     if (maxabs > cfg->max_rpm)
     {
-        if (spin_on == 0U)
+        if (drive->spin_on == 0U)
         {
             scale = cfg->max_rpm / maxabs;
             for (i = 0U; i < 4U; i++) { tgt[i] *= scale; }
@@ -539,6 +554,12 @@ static void chassis_pid_run(const chassis_cfg_t *cfg)
     chassis_state.translation_scale = move_scale * scale;
     chassis_state.wz_applied = (tgt[0] - tgt[1] - tgt[2] + tgt[3]) * 0.25f;
 
+    return 1U;
+}
+
+static uint8_t chassis_wheel_pid(const float tgt[4], int16_t cur[4])
+{
+    uint8_t i;
     for (i = 0U; i < 4U; i++)
     {
         float fb = (float)motor_chassis[i].fb.speed_rpm * (float)motor_dir[i];  /* 前进为正 */
@@ -561,27 +582,70 @@ static void chassis_pid_run(const chassis_cfg_t *cfg)
             !chassis_range_valid(chassis_pid[i].last_error, -CHASSIS_PID_ERROR_MAX, CHASSIS_PID_ERROR_MAX))
         {
             chassis_fail(CHASSIS_CONTROL_FAULT_NUMERIC);
-            return;
+            return 0U;
         }
         command = pid_calc(&chassis_pid[i], tgt[i], fb) * (float)motor_dir[i];
-        if (!isfinite(command)) { chassis_fail(CHASSIS_CONTROL_FAULT_NUMERIC); return; }
+        if (!isfinite(command)) { chassis_fail(CHASSIS_CONTROL_FAULT_NUMERIC); return 0U; }
         if (command >  CHASSIS_COMMAND_MAX) { command =  CHASSIS_COMMAND_MAX; }
         if (command < -CHASSIS_COMMAND_MAX) { command = -CHASSIS_COMMAND_MAX; }
         cur[i] = (int16_t)command;
         chassis_state.dbg_cur[i] = cur[i];
     }
 
+    return 1U;
+}
+
+static void chassis_pid_run(const chassis_cfg_t *cfg)
+{
+    chassis_drive_t drive;
+    float tgt[4];
+    int16_t cur[4] = { 0, 0, 0, 0 };
+
+    drive.sw2 = remote.sw2;
+    drive.spin_on = (drive.sw2 == INPUT_SW_MID) ? 1U : 0U;
+    drive.follow_on = (uint8_t)((drive.spin_on == 0U) && (cfg->follow_en != 0U) &&
+                              (cfg->move_frame == CHASSIS_FRAME_GIMBAL));
+    if (chassis_prepare_drive(cfg, &drive) == 0U) { return; }
+    chassis_transform_move(cfg, &drive);
+    chassis_select_rotation(cfg, &drive);
+    if (chassis_allocate_wheels(cfg, &drive, tgt) == 0U) { return; }
+    if (chassis_wheel_pid(tgt, cur) == 0U) { return; }
     motor_chassis_send_current(cur);
 }
 
+static void chassis_yaw_invalidate(void)
+{
+    chassis_state.yaw_valid = 0U;
+    chassis_state.yaw_rel_rad = 0.0f;
+    chassis_state.yaw_age_ms = UINT32_MAX;
+}
 
-void chassis_run(void)
+static void chassis_rearm_on_change(chassis_mode_e mode, const chassis_cfg_t *cfg)
 {
     static chassis_mode_e previous_mode = CHASSIS_MODE_STOP;
     static chassis_frame_e previous_frame = CHASSIS_FRAME_GIMBAL;
     static int16_t previous_zero = -1;
     static int8_t previous_dir = 0;
     static uint8_t previous_follow_en = 0U;
+    /* 模式或几何配置变化后，先归中；PID 每拍使用这次复制的配置。 */
+    if ((mode != previous_mode) ||
+        ((mode == CHASSIS_MODE_PID_TEST) &&
+         ((cfg->move_frame != previous_frame) ||
+          (cfg->yaw_zero_ecd != previous_zero) || (cfg->yaw_ecd_dir != previous_dir) ||
+          (cfg->follow_en != previous_follow_en))))
+    {
+        chassis_state.wait_neutral = 1U;
+    }
+    previous_mode = mode;
+    previous_frame = cfg->move_frame;
+    previous_zero = cfg->yaw_zero_ecd;
+    previous_dir = cfg->yaw_ecd_dir;
+    previous_follow_en = cfg->follow_en;
+
+}
+
+void chassis_run(void)
+{
     chassis_mode_e mode = chassis_state.mode;
     const chassis_cfg_t cfg = chassis_cfg;
     chassis_state.follow_active = 0U;
@@ -601,35 +665,18 @@ void chassis_run(void)
         !((gimbal_state.home_state == GIMBAL_YAW_HOME_FAULT) &&
           (gimbal_state.home_fault == GIMBAL_YAW_HOME_FAULT_TIMEOUT)))
     {
-        chassis_state.yaw_valid = 0U;
-        chassis_state.yaw_rel_rad = 0.0f;
-        chassis_state.yaw_age_ms = UINT32_MAX;
+        chassis_yaw_invalidate();
         chassis_stop();
         return;
     }
 
-    /* 模式或几何配置变化后，先归中；PID 每拍使用这次复制的配置。 */
-    if ((mode != previous_mode) ||
-        ((mode == CHASSIS_MODE_PID_TEST) &&
-         ((cfg.move_frame != previous_frame) ||
-          (cfg.yaw_zero_ecd != previous_zero) || (cfg.yaw_ecd_dir != previous_dir) ||
-          (cfg.follow_en != previous_follow_en))))
-    {
-        chassis_state.wait_neutral = 1U;
-    }
-    previous_mode = mode;
-    previous_frame = cfg.move_frame;
-    previous_zero = cfg.yaw_zero_ecd;
-    previous_dir = cfg.yaw_ecd_dir;
-    previous_follow_en = cfg.follow_en;
+    chassis_rearm_on_change(mode, &cfg);
 
     switch (mode)
     {
     case CHASSIS_MODE_RC:
         chassis_park_reset();
-        chassis_state.yaw_valid = 0U;
-        chassis_state.yaw_rel_rad = 0.0f;
-        chassis_state.yaw_age_ms = UINT32_MAX;
+        chassis_yaw_invalidate();
         chassis_rc_run(&cfg);
         break;
 
@@ -639,9 +686,7 @@ void chassis_run(void)
 
     case CHASSIS_MODE_STOP:
     default:
-        chassis_state.yaw_valid = 0U;
-        chassis_state.yaw_rel_rad = 0.0f;
-        chassis_state.yaw_age_ms = UINT32_MAX;
+        chassis_yaw_invalidate();
         chassis_stop();
         break;
     }
