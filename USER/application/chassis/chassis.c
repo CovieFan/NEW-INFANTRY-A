@@ -392,18 +392,9 @@ static void chassis_pid_sync(const chassis_cfg_t *cfg)
 
 }
 
-/* 含原有故障/归中/驻车处理；返回0时本拍已走相应停止路径。 */
-static uint8_t chassis_prepare_drive(const chassis_cfg_t *cfg, chassis_drive_t *drive)
+/* 反馈与当前启用功能的配置检查，失败保留原停止动作。 */
+static uint8_t chassis_drive_allowed(const chassis_cfg_t *cfg, chassis_drive_t *drive)
 {
-    /* 校验先于PID初始化、同步和目标计算。 */
-    if (chassis_pid_config_valid(cfg) == 0U)
-    {
-        chassis_fail(CHASSIS_CONTROL_FAULT_CONFIG);
-        return 0U;
-    }
-
-    chassis_pid_sync(cfg);
-
     chassis_yaw_update(cfg);
     if ((remote.online == 0U) ||
         ((drive->sw2 != INPUT_SW_UP) && (drive->sw2 != INPUT_SW_MID) && (drive->sw2 != INPUT_SW_DOWN)) ||
@@ -425,6 +416,12 @@ static uint8_t chassis_prepare_drive(const chassis_cfg_t *cfg, chassis_drive_t *
         chassis_fail(CHASSIS_CONTROL_FAULT_CONFIG);
         return 0U;
     }
+    return 1U;
+}
+
+/* 故障恢复、归中和正常驻车是业务状态，不混入数值检查。 */
+static uint8_t chassis_prepare_motion(const chassis_cfg_t *cfg, chassis_drive_t *drive)
+{
     if (chassis_state.park_state == CHASSIS_PARK_FAULT)
     {
         if ((cfg->park.enable == 0U) || (chassis_park_input_active() != 0U)) { chassis_park_reset(); }
@@ -454,6 +451,21 @@ static uint8_t chassis_prepare_drive(const chassis_cfg_t *cfg, chassis_drive_t *
     }
 
     return 1U;
+}
+
+static uint8_t chassis_prepare_drive(const chassis_cfg_t *cfg, chassis_drive_t *drive)
+{
+    /* 校验先于PID初始化、同步和目标计算。 */
+    if (chassis_pid_config_valid(cfg) == 0U)
+    {
+        chassis_fail(CHASSIS_CONTROL_FAULT_CONFIG);
+        return 0U;
+    }
+
+    chassis_pid_sync(cfg);
+
+    if (chassis_drive_allowed(cfg, drive) == 0U) { return 0U; }
+    return chassis_prepare_motion(cfg, drive);
 }
 
 static void chassis_transform_move(const chassis_cfg_t *cfg, chassis_drive_t *drive)

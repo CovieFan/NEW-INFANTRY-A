@@ -222,11 +222,9 @@ static void gimbal_pid_sync(pid_t *p, float kp, float ki, float kd,
     p->integral_limit = int_lim;
 }
 
-static float gimbal_yaw_control(const gimbal_yaw_cfg_t *cfg)
+/* 初始化、失联和基准恢复；返回0时本拍保持零命令。 */
+static uint8_t gimbal_yaw_prepare(const gimbal_yaw_cfg_t *cfg)
 {
-    float yaw_stick_norm;//摇杆轴归一化值
-    float out;
-
     if (yaw_ready == 0U)
     {
         pid_init(&pid_yaw, cfg->kp_ang, cfg->ki_ang, 0.0f, cfg->w_ref_lim, cfg->int_lim);
@@ -237,7 +235,7 @@ static float gimbal_yaw_control(const gimbal_yaw_cfg_t *cfg)
         yaw_omega_ff  = 0.0f;
         yaw_out       = 0.0f;
         yaw_ready     = 1U;
-        return 0.0f;
+        return 0U;
     }
 
     gimbal_pid_sync(&pid_yaw, cfg->kp_ang, cfg->ki_ang, 0.0f, cfg->w_ref_lim, cfg->int_lim);
@@ -251,7 +249,7 @@ static float gimbal_yaw_control(const gimbal_yaw_cfg_t *cfg)
         yaw_omega_fb  = 0.0f;
         yaw_omega_ff  = 0.0f;
         yaw_out       = 0.0f;
-        return 0.0f;
+        return 0U;
     }
 
     /* ★基准刚换过（上电首次收到反馈 / 掉线恢复）→ 目标也贴到新基准，防跳变暴冲 */
@@ -262,8 +260,18 @@ static float gimbal_yaw_control(const gimbal_yaw_cfg_t *cfg)
         yaw_err       = 0.0f;
         yaw_omega_ref = 0.0f;
         pid_reset(&pid_yaw);
-        return 0.0f;
+        return 0U;
     }
+
+    return 1U;
+}
+
+static float gimbal_yaw_control(const gimbal_yaw_cfg_t *cfg)
+{
+    float yaw_stick_norm;
+    float out;
+
+    if (gimbal_yaw_prepare(cfg) == 0U) { return 0.0f; }
 
     yaw_stick_norm = input_axis(INPUT_AXIS_GIMBAL_YAW);
 
@@ -405,7 +413,7 @@ static float gimbal_yaw_startup_control(const gimbal_yaw_cfg_t *yaw_cfg,
         gimbal_yaw_reset();
         return 0.0f;
     }
-    /* 参数合法性统一由 gimbal_yaw_config_valid 把关（含 home.*）；
+    /* 公共参数检查由 gimbal_yaw_config_valid 负责（当前不检查 home.*）；
        此处只判零位标定，以及回正途中零位/方向被 Watch 改掉。 */
     if ((zero < 0) || (zero >= GIMBAL_ENC_RANGE) || ((dir != 1) && (dir != -1)) ||
         (((gimbal_state.home_state == GIMBAL_YAW_HOME_RUN) ||
