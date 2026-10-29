@@ -91,17 +91,17 @@ typedef struct
     /* ---- YAW 启动回正 ---- */
     gimbal_yaw_home_state_e home_state;
     gimbal_yaw_home_fault_e home_fault;
-    uint8_t  home_manual_ready;   /* 超时后 YAW 杆归中，允许手动接管 */
-    float    home_err;            /* 最短回正角差，rad，左转为正 */
+    uint8_t  home_manual_ready;   
+    float    home_err;            
     uint32_t home_elapsed_ms;
     uint32_t home_stable_ms;
-    /* ---- 控制许可位图（GIMBAL_INHIBIT_x 组合）---- */
+    
     uint8_t  yaw_inhibit;
     uint8_t  pitch_inhibit;
-    /* ---- 反馈新鲜度 ---- */
+    
     uint32_t yaw_age_ms;
     uint32_t pitch_age_ms;
-    /* ---- YAW 驻车 ---- */
+    
     uint8_t  yaw_park_active;
     float    yaw_park_err;        /* 相对锁存编码器角的最短误差，rad */
 } gimbal_state_t;

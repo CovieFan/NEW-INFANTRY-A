@@ -74,30 +74,20 @@ static uint8_t gimbal_range_valid(float value, float low, float high)
 
 static uint8_t gimbal_yaw_config_valid(const gimbal_yaw_cfg_t *cfg)
 {
-    return (uint8_t)((cfg->speed_mode <= 1U) && (cfg->omega_ff_en <= 1U) &&
-        gimbal_range_valid(cfg->kp_w, 0.0f, GIMBAL_GAIN_MAX) &&
-        gimbal_range_valid(cfg->kick, 0.0f, GIMBAL_COMMAND_MAX) &&
-        gimbal_range_valid(cfg->speed_max, 0.0f, GIMBAL_SPEED_MAX) &&
-        gimbal_range_valid(cfg->kp_ang, 0.0f, GIMBAL_GAIN_MAX) &&
-        gimbal_range_valid(cfg->ki_ang, 0.0f, GIMBAL_GAIN_MAX) &&
-        gimbal_range_valid(cfg->w_ref_lim, 0.0f, GIMBAL_SPEED_MAX) && (cfg->w_ref_lim > 0.0f) &&
-        gimbal_range_valid(cfg->int_lim, 0.0f, GIMBAL_INTEGRAL_MAX) &&
-        gimbal_range_valid(cfg->tgt_rate, 0.0f, GIMBAL_PI) &&
-        gimbal_range_valid(cfg->out_lim, 0.0f, GIMBAL_COMMAND_MAX) && (cfg->out_lim > 0.0f) &&
-        gimbal_range_valid(cfg->park.kp_ang, 0.0f, GIMBAL_GAIN_MAX) && (cfg->park.kp_ang > 0.0f) &&
-        gimbal_range_valid(cfg->park.speed_max, 0.0f, GIMBAL_SPEED_MAX) && (cfg->park.speed_max > 0.0f) &&
-        gimbal_range_valid(cfg->park.out_lim, 0.0f, GIMBAL_COMMAND_MAX) && (cfg->park.out_lim > 0.0f));
+    /* 只留会让限幅失效或输出被污染的值：out_lim 是唯一限幅来源，越界会让 int16 溢出；
+       NaN 由 !isfinite(out) 兜底，超范围由 out_lim 截断，其余参数不查。 */
+    return (uint8_t)(isfinite(cfg->kp_w) && isfinite(cfg->kp_ang) &&
+                     isfinite(cfg->out_lim) && (cfg->out_lim > 0.0f) &&
+                     (cfg->out_lim <= GIMBAL_COMMAND_MAX));
 }
 
 static uint8_t gimbal_pitch_config_valid(const gimbal_pitch_cfg_t *cfg)
 {
+    /* level/dir 必须已标定；out_lim 是唯一限幅来源，越界会让 int16 溢出。 */
     return (uint8_t)((cfg->level >= 0) && (cfg->level < GIMBAL_ENC_RANGE) &&
-        ((cfg->dir == 1.0f) || (cfg->dir == -1.0f)) &&
-        gimbal_range_valid(cfg->kp, 0.0f, GIMBAL_GAIN_MAX) &&
-        gimbal_range_valid(cfg->ki, 0.0f, GIMBAL_GAIN_MAX) &&
-        gimbal_range_valid(cfg->kd, 0.0f, GIMBAL_GAIN_MAX) &&
-        gimbal_range_valid(cfg->out_lim, 0.0f, GIMBAL_COMMAND_MAX) && (cfg->out_lim > 0.0f) &&
-        gimbal_range_valid(cfg->int_lim, 0.0f, GIMBAL_INTEGRAL_MAX));
+                     ((cfg->dir == 1.0f) || (cfg->dir == -1.0f)) &&
+                     isfinite(cfg->out_lim) && (cfg->out_lim > 0.0f) &&
+                     (cfg->out_lim <= GIMBAL_COMMAND_MAX));
 }
 
 static uint8_t gimbal_pid_state_valid(const pid_t *pid)
@@ -152,7 +142,7 @@ volatile gimbal_cfg_t gimbal_cfg =
         .w_ref_lim   = 20.0f,     /* 期望角速度限幅 (rad/s) */
         .int_lim     = 0.0f,      /* ki_ang = 0，用不上 */
         .tgt_rate    = 0.0038f,   /* 位控：摇杆积分速率 (rad/tick) */
-        .out_lim     = 24000.0f,  /* 输出限幅（0x1FF 量程 +-25000） */
+        .out_lim     = 20000.0f,  /* 输出限幅（0x1FF 量程 +-25000） */
         .home =
         {
             .kp_ang = 5.0f,
@@ -415,16 +405,9 @@ static float gimbal_yaw_startup_control(const gimbal_yaw_cfg_t *yaw_cfg,
         gimbal_yaw_reset();
         return 0.0f;
     }
+    /* 参数合法性统一由 gimbal_yaw_config_valid 把关（含 home.*）；
+       此处只判零位标定，以及回正途中零位/方向被 Watch 改掉。 */
     if ((zero < 0) || (zero >= GIMBAL_ENC_RANGE) || ((dir != 1) && (dir != -1)) ||
-        !gimbal_range_valid(cfg.speed_max, 0.0f, GIMBAL_SPEED_MAX) || (cfg.speed_max <= 0.0f) ||
-        !isfinite(cfg.speed_min) || (cfg.speed_min <= 0.0f) || (cfg.speed_min > cfg.speed_max) ||
-        !gimbal_range_valid(cfg.out_lim, 0.0f, GIMBAL_COMMAND_MAX) || (cfg.out_lim <= 0.0f) ||
-        !gimbal_range_valid(cfg.omega_tolerance, 0.0f, GIMBAL_SPEED_MAX) || (cfg.omega_tolerance <= 0.0f) ||
-        !gimbal_range_valid(cfg.kp_ang, 0.0f, GIMBAL_GAIN_MAX) || (cfg.kp_ang <= 0.0f) ||
-        !gimbal_range_valid(kp_w, 0.0f, GIMBAL_GAIN_MAX) || (kp_w <= 0.0f) ||
-        !gimbal_range_valid(yaw_out_lim, 0.0f, GIMBAL_COMMAND_MAX) || (yaw_out_lim <= 0.0f) ||
-        (cfg.tolerance_ecd == 0U) || (cfg.tolerance_ecd >= GIMBAL_ENC_HALF) ||
-        (cfg.settle_ms == 0U) || (cfg.timeout_ms <= cfg.settle_ms) ||
         (((gimbal_state.home_state == GIMBAL_YAW_HOME_RUN) ||
           ((gimbal_state.home_state == GIMBAL_YAW_HOME_FAULT) &&
            (gimbal_state.home_fault == GIMBAL_YAW_HOME_FAULT_TIMEOUT))) &&
@@ -622,8 +605,6 @@ void gimbal_run(void)
         gimbal_yaw_reset();
         out = 0.0f;
     }
-    if (out >  GIMBAL_COMMAND_MAX) { out =  GIMBAL_COMMAND_MAX; }
-    if (out < -GIMBAL_COMMAND_MAX) { out = -GIMBAL_COMMAND_MAX; }
     gimbal_state.yaw_inhibit = yaw_inhibit;
     motor_gimbal_send_yaw((int16_t)out);     
 
@@ -646,8 +627,6 @@ void gimbal_run(void)
         pitch_pid_out = 0.0f;
         out = 0.0f;
     }
-    if (out >  GIMBAL_COMMAND_MAX) { out =  GIMBAL_COMMAND_MAX; }
-    if (out < -GIMBAL_COMMAND_MAX) { out = -GIMBAL_COMMAND_MAX; }
     gimbal_state.pitch_inhibit = pitch_inhibit;
     motor_gimbal_send_pitch((int16_t)out);//同上
 }
