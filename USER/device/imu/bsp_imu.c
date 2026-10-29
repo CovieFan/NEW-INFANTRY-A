@@ -237,17 +237,10 @@ void bsp_imu_init(void)
 }
 
 /* ---------------- 主循环取数 ---------------- */
-void bsp_imu_update(void)
+/* SPI读取失败保留原在线超时策略。 */
+static uint8_t imu_read_sample(uint8_t buf[14])
 {
-    uint8_t buf[14];
-    float   yaw_now = 0.0f;   /* 未校零的竖直角速度投影，供旧标量兜底使用 */
-    float   gyro_x;
-    float   gyro_y;
-    float   gyro_z;
-    float   n2;
-    float   inv;
-    uint16_t dx, dy, dz;
-    if (imu_init_ok == 0U) { return; }
+    if (imu_init_ok == 0U) { return 0U; }
     if (imu_read_regs(MPU6500_ACCEL_XOUT_H, buf, 14U) == 0U)
     {
         imu_read_fail++;
@@ -259,10 +252,18 @@ void bsp_imu_update(void)
             imu_gyro_z = 0.0f;   /* ★掉线 → 输出归零，防"旧值当恒定偏置" */
             imu_gyro_yaw = 0.0f;   /* ★掉线 → 真 yaw 也归零 */
         }
-        return;
+        return 0U;
     }
     imu_read_ok++;
+    return 1U;
+}
 
+/* 解包、更新重力方向并检查当前测量，成功后才进入标定/发布。 */
+static uint8_t imu_decode_sample(const uint8_t buf[14], float *gyro_x,
+                                 float *gyro_y, float *gyro_z, float *yaw_now)
+{
+    float n2;
+    float inv;
         /* ★加计：原来读了就丢，现在用来定"竖直方向" */
     imu_acc_x_raw = imu_be16(&buf[0]);
     imu_acc_y_raw = imu_be16(&buf[2]);
@@ -278,16 +279,16 @@ void bsp_imu_update(void)
     imu_gyro_y_raw = imu_be16(&buf[10]);
     imu_gyro_z_raw = imu_be16(&buf[12]);
 
-    gyro_x = (float)imu_gyro_x_raw * MPU6500_GYRO_LSB2RADPS;
-    gyro_y = (float)imu_gyro_y_raw * MPU6500_GYRO_LSB2RADPS;
-    gyro_z = (float)imu_gyro_z_raw * MPU6500_GYRO_LSB2RADPS;
-    imu_gyro_z = BSP_IMU_GYRO_Z_SIGN * gyro_z; /* 单轴Z仅诊断，其SIGN不参与三轴校零。 */
+    *gyro_x = (float)imu_gyro_x_raw * MPU6500_GYRO_LSB2RADPS;
+    *gyro_y = (float)imu_gyro_y_raw * MPU6500_GYRO_LSB2RADPS;
+    *gyro_z = (float)imu_gyro_z_raw * MPU6500_GYRO_LSB2RADPS;
+    imu_gyro_z = BSP_IMU_GYRO_Z_SIGN * *gyro_z; /* 单轴Z仅诊断，其SIGN不参与三轴校零。 */
     /* 先检查原始帧：旧低通状态不能把新收到的全零加计伪装为有效重力。 */
     if (!isfinite(imu_acc_norm) || ((imu_acc_norm * imu_acc_norm) <= BSP_IMU_GRAV_MIN_N2))
     {
         imu_invalid_count++;
         imu_reject_sample(BSP_IMU_FAULT_SAMPLE_GRAVITY);
-        return;
+        return 0U;
     }
     /* 加计低通后归一化，提取竖直方向。安装姿态无需对准Z轴；
        动态加速度仍会干扰这个方向，低通不能消除全部影响。 */
@@ -315,124 +316,143 @@ void bsp_imu_update(void)
         imu_grav_uy = grav_y * inv;
         imu_grav_uz = grav_z * inv;
 
-        yaw_now = BSP_IMU_YAW_SIGN *
-                  (gyro_x * imu_grav_ux + gyro_y * imu_grav_uy + gyro_z * imu_grav_uz);
+        *yaw_now = BSP_IMU_YAW_SIGN *
+                  (*gyro_x * imu_grav_ux + *gyro_y * imu_grav_uy + *gyro_z * imu_grav_uz);
     }
     else
     {
         imu_invalid_count++;
         imu_reject_sample(BSP_IMU_FAULT_SAMPLE_GRAVITY);
-        return;
+        return 0U;
     }
-    if (!isfinite(yaw_now))
+    if (!isfinite(*yaw_now))
     {
         imu_invalid_count++;
         imu_reject_sample(BSP_IMU_FAULT_SAMPLE_NONFINITE);
-        return;
+        return 0U;
     }
     imu_sample_valid = 1U;
     imu_fault = BSP_IMU_FAULT_NONE;
 
-    if (imu_cal_ok == 0U)
+    return 1U;
+}
+
+static void imu_calibrate_sample(float gyro_x, float gyro_y, float gyro_z)
+{
+    uint16_t dx, dy, dz;
+    /* ① 标定窗口：只累计零偏；对外输出 0 且不算"在线"
+          （上层会把它当无效 -> 阻尼/速度环归零，安全）*/
+    cal_sum_x += gyro_x;
+    cal_sum_y += gyro_y;
+    cal_sum_z += gyro_z;
+    imu_cal_cnt++;
+
+    /* ★静止检测：与窗口首帧比，任三轴偏移超阈值就判「动过」，此时不采用这个均值 */
+    if (cal_ref == 0U)
     {
-        /* ① 标定窗口：只累计零偏；对外输出 0 且不算"在线"
-              （上层会把它当无效 -> 阻尼/速度环归零，安全）*/
-        cal_sum_x += gyro_x;
-        cal_sum_y += gyro_y;
-        cal_sum_z += gyro_z;
-        imu_cal_cnt++;
-
-        /* ★静止检测：与窗口首帧比，任三轴偏移超阈值就判「动过」，此时不采用这个均值 */
-        if (cal_ref == 0U)
-        {
-            cal_x0  = imu_gyro_x_raw;
-            cal_y0  = imu_gyro_y_raw;
-            cal_z0  = imu_gyro_z_raw;
-            cal_ref = 1U;
-            cal_dev = 0U;
-        }
-        else
-        {
-            dx = (uint16_t)((imu_gyro_x_raw > cal_x0) ? (imu_gyro_x_raw - cal_x0) : (cal_x0 - imu_gyro_x_raw));
-            dy = (uint16_t)((imu_gyro_y_raw > cal_y0) ? (imu_gyro_y_raw - cal_y0) : (cal_y0 - imu_gyro_y_raw));
-            dz = (uint16_t)((imu_gyro_z_raw > cal_z0) ? (imu_gyro_z_raw - cal_z0) : (cal_z0 - imu_gyro_z_raw));
-            if (dx > cal_dev) { cal_dev = dx; }
-            if (dy > cal_dev) { cal_dev = dy; }
-            if (dz > cal_dev) { cal_dev = dz; }
-        }
-
-        if ((HAL_GetTick() - cal_start_ms) >= BSP_IMU_CAL_MS)
-        {
-            if (imu_cal_cnt >= BSP_IMU_CAL_MIN_CNT)
-            {
-                float bias_x = cal_sum_x / (float)imu_cal_cnt;
-                float bias_y = cal_sum_y / (float)imu_cal_cnt;
-                float bias_z = cal_sum_z / (float)imu_cal_cnt;
-
-                if ((cal_dev <= BSP_IMU_CAL_MAX_DEV_LSB) &&
-                    imu_bias_valid(bias_x) && imu_bias_valid(bias_y) && imu_bias_valid(bias_z))
-                {
-                    imu_gyro_bias_x = bias_x;
-                    imu_gyro_bias_y = bias_y;
-                    imu_gyro_bias_z = bias_z;
-                    imu_cal_source = BSP_IMU_CAL_VECTOR;
-                }
-                else
-                {
-                    /* 未采用本次三轴均值；保留旧标量处理，不伪造三轴默认值。 */
-                    imu_cal_source = BSP_IMU_CAL_LEGACY_DEFAULT;
-                }
-                imu_cal_ok      = 1U;
-                imu_startup_done = 1U;
-            }
-            else
-            {
-                /* 帧太少（主循环被卡过？）-> 重来一轮 */
-                imu_calibration_reset(HAL_GetTick());
-            }
-        }
-
-        imu_gyro_yaw = 0.0f;
-        imu_online = 0U;
+        cal_x0  = imu_gyro_x_raw;
+        cal_y0  = imu_gyro_y_raw;
+        cal_z0  = imu_gyro_z_raw;
+        cal_ref = 1U;
+        cal_dev = 0U;
     }
     else
     {
-        float corrected;
-        if (imu_cal_source == BSP_IMU_CAL_VECTOR)
+        dx = (uint16_t)((imu_gyro_x_raw > cal_x0) ? (imu_gyro_x_raw - cal_x0) : (cal_x0 - imu_gyro_x_raw));
+        dy = (uint16_t)((imu_gyro_y_raw > cal_y0) ? (imu_gyro_y_raw - cal_y0) : (cal_y0 - imu_gyro_y_raw));
+        dz = (uint16_t)((imu_gyro_z_raw > cal_z0) ? (imu_gyro_z_raw - cal_z0) : (cal_z0 - imu_gyro_z_raw));
+        if (dx > cal_dev) { cal_dev = dx; }
+        if (dy > cal_dev) { cal_dev = dy; }
+        if (dz > cal_dev) { cal_dev = dz; }
+    }
+
+    if ((HAL_GetTick() - cal_start_ms) >= BSP_IMU_CAL_MS)
+    {
+        if (imu_cal_cnt >= BSP_IMU_CAL_MIN_CNT)
         {
-            float bias_x = imu_gyro_bias_x;
-            float bias_y = imu_gyro_bias_y;
-            float bias_z = imu_gyro_bias_z;
-            if (!imu_bias_valid(bias_x) || !imu_bias_valid(bias_y) || !imu_bias_valid(bias_z))
+            float bias_x = cal_sum_x / (float)imu_cal_cnt;
+            float bias_y = cal_sum_y / (float)imu_cal_cnt;
+            float bias_z = cal_sum_z / (float)imu_cal_cnt;
+
+            if ((cal_dev <= BSP_IMU_CAL_MAX_DEV_LSB) &&
+                imu_bias_valid(bias_x) && imu_bias_valid(bias_y) && imu_bias_valid(bias_z))
             {
-                imu_invalid_count++;
-                imu_reject_sample(BSP_IMU_FAULT_SAMPLE_NONFINITE);
-                return;
+                imu_gyro_bias_x = bias_x;
+                imu_gyro_bias_y = bias_y;
+                imu_gyro_bias_z = bias_z;
+                imu_cal_source = BSP_IMU_CAL_VECTOR;
             }
-            /* 各轴先校零再投影；姿态变化时不重复扣除旧的投影标量。 */
-            corrected = BSP_IMU_YAW_SIGN *
-                ((gyro_x - bias_x) * imu_grav_ux + (gyro_y - bias_y) * imu_grav_uy +
-                 (gyro_z - bias_z) * imu_grav_uz);
-        }
-        else if (imu_cal_source == BSP_IMU_CAL_LEGACY_DEFAULT)
-        {
-            corrected = yaw_now - imu_gyro_z_bias;
+            else
+            {
+                /* 未采用本次三轴均值；保留旧标量处理，不伪造三轴默认值。 */
+                imu_cal_source = BSP_IMU_CAL_LEGACY_DEFAULT;
+            }
+            imu_cal_ok      = 1U;
+            imu_startup_done = 1U;
         }
         else
         {
-            imu_invalid_count++;
-            imu_reject_sample(BSP_IMU_FAULT_CAL_STATE);
-            return;
+            /* 帧太少（主循环被卡过？）-> 重来一轮 */
+            imu_calibration_reset(HAL_GetTick());
         }
-        if (!isfinite(corrected))
+    }
+
+    imu_gyro_yaw = 0.0f;
+    imu_online = 0U;
+}
+
+static uint8_t imu_publish_yaw(float gyro_x, float gyro_y, float gyro_z, float yaw_now)
+{
+    float corrected;
+    if (imu_cal_source == BSP_IMU_CAL_VECTOR)
+    {
+        float bias_x = imu_gyro_bias_x;
+        float bias_y = imu_gyro_bias_y;
+        float bias_z = imu_gyro_bias_z;
+        if (!imu_bias_valid(bias_x) || !imu_bias_valid(bias_y) || !imu_bias_valid(bias_z))
         {
             imu_invalid_count++;
             imu_reject_sample(BSP_IMU_FAULT_SAMPLE_NONFINITE);
-            return;
+            return 0U;
         }
-        imu_gyro_yaw = corrected;
-        imu_online = 1U;
+        /* 各轴先校零再投影；姿态变化时不重复扣除旧的投影标量。 */
+        corrected = BSP_IMU_YAW_SIGN *
+            ((gyro_x - bias_x) * imu_grav_ux + (gyro_y - bias_y) * imu_grav_uy +
+             (gyro_z - bias_z) * imu_grav_uz);
     }
+    else if (imu_cal_source == BSP_IMU_CAL_LEGACY_DEFAULT)
+    {
+        corrected = yaw_now - imu_gyro_z_bias;
+    }
+    else
+    {
+        imu_invalid_count++;
+        imu_reject_sample(BSP_IMU_FAULT_CAL_STATE);
+        return 0U;
+    }
+    if (!isfinite(corrected))
+    {
+        imu_invalid_count++;
+        imu_reject_sample(BSP_IMU_FAULT_SAMPLE_NONFINITE);
+        return 0U;
+    }
+    imu_gyro_yaw = corrected;
+    imu_online = 1U;
+    return 1U;
+}
 
+void bsp_imu_update(void)
+{
+    uint8_t buf[14];
+    float gyro_x, gyro_y, gyro_z;
+    float yaw_now = 0.0f;
+
+    if (imu_read_sample(buf) == 0U) { return; }
+    if (imu_decode_sample(buf, &gyro_x, &gyro_y, &gyro_z, &yaw_now) == 0U) { return; }
+    if (imu_cal_ok == 0U)
+    {
+        imu_calibrate_sample(gyro_x, gyro_y, gyro_z);
+    }
+    else if (imu_publish_yaw(gyro_x, gyro_y, gyro_z, yaw_now) == 0U) { return; }
     imu_last_ok_ms = HAL_GetTick();
 }
