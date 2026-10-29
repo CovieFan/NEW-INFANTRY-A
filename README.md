@@ -1,237 +1,228 @@
-# NEW-INFANTRY-A · 步兵固件（裸机 · 从零重写）
+# NEW-INFANTRY-A · 步兵底盘与云台固件
 
-> 西北农林科技大学 RoboMaster 猎隼战队 · 电控组 ｜ 唯一工程级参考：**ARBATOS**（同款 A 板）
-> 最后更新：2026-10-14
+> 西北农林科技大学 RoboMaster 猎隼战队 · 电控组
+> 最后更新：2026-10-29
 
----
+基于 DJI A 板（STM32F427IIH6）的步兵下位机固件。当前使用裸机主循环和 TIM6 1 kHz 控制节拍，主要业务是遥控驾驶、底盘跟随与小陀螺、YAW 控制、PITCH 水平保持。当前控制链未使用 RTOS 或 DMA 采集。
 
-## 一、这是什么
+车辆已具备基本驾驶与云台控制功能，现阶段以代码阅读、可读性整理和专项验收为主。本文描述已提交主线中的设计；已有功能不等于所有机械工况都已验收。
 
-DJI A 板（STM32F427IIHx）上的步兵下位机固件：**裸机 / 无 RTOS / 无 DMA**，由 TIM6 的 1 kHz 节拍驱动底盘与云台。
+## 一、功能与操作方式
 
-| 模块 | 状态 |
+| 功能 | 当前行为 |
 |---|---|
-| 底盘 4×M3508 速度环 + 拨杆自转 | ✅ 可用（保护欠债） |
-| 云台 PITCH 角度环（松手自回水平） | ✅ 可用 |
-| 遥控 DBUS 收发 + 摇杆归一化 | ✅ 可用（2026-10-14 修好 USART1 位宽，通道与拨杆全部正确）|
-| IMU 驱动（MPU6500 / SPI5）+ 投影法 | ✅ 可用 |
-| **云台 YAW 位置环** | ⚠️ **攻坚中**：已定位为**静摩擦死区（≈2° 呆滞）+ 零偏温漂（0.23 °/s）** |
-| 保护层（软限位 / 失速 / 过温） | ❌ 基本空白 |
+| 云台参考系驾驶 | 左杆前进沿枪口指向移动，再按 YAW 相对角转换成底盘四轮目标 |
+| 底盘跟随 | 关闭小陀螺时，车头自动向枪口方向收敛 |
+| 小陀螺 | `sw2` 中位开启固定自转；轮速预算不足时优先保留旋转目标，缩小平移 |
+| YAW 正常控制 | IMU 积分角外环、投影角速度内环，支持摇杆速度前馈 |
+| YAW 启动回正 | 获准控制后寻找编码器零位 `5500`，带连续到位判断和超时接管 |
+| IMU 三轴校零 | 上电静止采集 X/Y/Z 偏置，逐轴扣除后再做重力方向投影 |
+| 闲置驻车 | 四轴回中且小陀螺关闭满 3 秒，底盘零轮速制动；停稳后锁存 YAW 相对编码器角 |
+| PITCH 水平保持 | 编码器位置闭环保持 `level=6000`；当前未接入右杆手动俯仰 |
+| 诊断与许可 | 配置/数值检查、反馈年龄、两轴独立禁止原因及驻车故障状态 |
 
-三条开发原则：**一次只加一个变量** · **完成 = 在车上看到现象** · **每行都能说出为什么**
+### 遥控映射
 
-## 二、硬件
+| 物理输入 | 原始通道/拨杆 | 用途 |
+|---|---|---|
+| 左杆纵向 | `ch3` | 底盘前后 |
+| 左杆横向 | `ch2` | 底盘横移 |
+| 右杆横向 | `ch0` | YAW，输入层已修正方向，左推向左转 |
+| 右杆纵向 | `ch1` | 保留 PITCH 输入映射；当前也参与驻车活动判定 |
+| `sw2` 中位 | 数值 `3` | 开启小陀螺 |
 
-### 2.1 主控
+原始行程约为 `−660～+660`，死区为 `60`，由 [input.c](USER/application/input.c) 统一映射为 `−1～+1`。死区内明确返回零，业务层不需要重复增加归中阈值。
 
-| 项 | 值 |
+### 回正、驻车与失联
+
+- 回正状态：`WAIT=0 → RUN=1 → DONE=2`；故障为 `FAULT=3`。`TIMEOUT` 故障可在右杆归中后手动接管，回到零位并稳定后才清除告警；能手动操作不等于已经 `DONE`。
+- 回正目标与方向使用底盘同一份标定：`yaw_zero_ecd=5500`、`yaw_ecd_dir=+1`，表示枪口向底盘左侧转时编码器增加。
+- 驻车状态：`DRIVE=0 → BRAKE=1 → HOLD=2`；故障为 `FAULT=3`。正常驻车使用零轮速闭环，不冻结上一拍电流命令。
+- 驻车保持枪口相对车体的角度，不是锁定绝对航向。有效推杆或开启小陀螺会退出驻车；底盘先更新状态，云台随后执行。
+- 遥控离线时，两轴停止主动控制并发送零命令，PITCH 可能失去承托。当前没有“关闭遥控仍继续自稳”的策略。
+
+当前主业务没有接入完整发射系统、视觉自瞄、裁判系统功率管理或超级电容控制。
+
+## 二、硬件与通信
+
+| 项目 | 当前配置 |
 |---|---|
-| MCU | **STM32F427IIHx**（DJI A 板，UFBGA176） |
-| 晶振 / 主频 | HSE 12 MHz → PLL → **168 MHz**；APB1 42M / APB2 84M |
-| 调试口 | SWD（PA13 / PA14） |
-| IMU | **MPU6500**，走 SPI5；陀螺 ±1000 dps、加计 ±8 g、DLPF 92 Hz |
-| IMU 安装 | **装在云台上**，且**板子是立着装的**（竖直方向 92.9% 落在 -Y 轴） |
+| 主控 | DJI A 板，STM32F427IIH6，Cortex-M4 |
+| 时钟 | HSE 12 MHz，系统主频 168 MHz |
+| IMU | MPU6500，SPI5，陀螺 ±1000 dps、加计 ±8 g |
+| 遥控 | DT7/DR16 DBUS，USART1，100000 baud，9 位字长含偶校验，1 停止位 |
+| CAN1 / CAN2 | 1 Mbps |
+| 调试输出 | UART8，115200，8N1 |
+| 控制定时器 | TIM6：84 MHz / (83+1) / (999+1) = 1 kHz |
+| 调试接口 | SWD，CMSIS-DAP / DAPLink |
 
-### 2.2 引脚分配
+| 执行器 | 总线 | 反馈 ID | 命令帧 / 槽位 |
+|---|---|---|---|
+| 底盘 FR / FL / RL / RR | CAN1 | `0x201～0x204` | `0x200` / 0～3 |
+| YAW GM6020 | CAN1 | `0x205` | `0x1FF` / 0 |
+| PITCH，当前按 6623 格式处理 | CAN2 | `0x206` | `0x1FF` / 1 |
 
-| 引脚 | 功能 | 挂什么 |
-|---|---|---|
-| PD0 / PD1 | CAN1 RX / TX | 底盘 4×M3508 + 云台 YAW（GM6020） |
-| PB12 / PB13 | CAN2 RX / TX | 云台 PITCH（6623）等 |
-| PB6 / PB7 | USART1 TX / RX | DBUS 遥控（DT7 + DR16） |
-| PE0 / PE1 | UART8 TX / RX | 调试串口（115200，BspPrintf） |
-| PF6 / PF7 / PF8 / PF9 | SPI5 CS / SCK / MISO / MOSI | MPU6500 |
-| PG1 | GPIO 输出 | 板载 LED |
-| PH6 | TIM12_CH1 | 蜂鸣器 PWM |
-| PB2 | 输入 | 按键 KEY |
-| **PB5** | TIM3_CH2 | **空闲**；A 板在此有 IMU 加热电阻（10 颗 / 24 V），我们未配 |
+设备配置、反馈解包和发送边界集中在 [motor.c](USER/device/motor/motor.c)。PITCH 专用反馈解析没有提供实际速度，代码中的 `speed_rpm=0` 不能视为静止测量。
 
-### 2.3 总线上的设备（含实测接收率）
+## 三、执行顺序与目录
 
-| 总线 | 设备 | 反馈 ID | 命令帧 / 槽位 | 实测接收率 |
-|---|---|---|---|---|
-| CAN1 | 4× M3508 + C620 | 0x201~0x204 | `0x200` / 槽位 0~3 | 5045 /s |
-| CAN1 | GM6020（云台 **YAW**） | **0x205** | `0x1FF` / 槽位 0 | 含在上面 |
-| CAN2 | 6623（云台 **PITCH**） | **0x206** | `0x1FF` / 槽位 1 | 4008 /s |
-| CAN2 | 2× 3510 + M2006（拨盘） | 按注册表 | — | 含在上面 |
+[main.c](Core/Src/main.c) 初始化 IMU、电机接收注册、CAN 和遥控后开启 TIM6。主循环更新 IMU，控制计算在定时回调中执行。
 
-> 一帧 8 字节 = 4 个槽位（每槽 2 字节）。`0x200` / `0x1FF` 是「**ID 1~4 / 5~8 的帧**」，不是「某个电机的帧」。
-> 两条总线各有独立的 `0x200` / `0x1FF`，互不干扰。
-
-### 2.4 外设参数
-
-| 外设 | 参数 | 算式 / 出处 |
-|---|---|---|
-| CAN1 / CAN2 | **1 Mbps** | 42M ÷ 3 ÷ (1+10+3) = 1.0 Mbps（HAL 用 `Prescaler-1` 写 BRP：`stm32f4xx_hal_can.c:437`） |
-| USART1（遥控） | 100000 / **9 位（含校验）= 8 数据位 + 偶校验** / 1 停止位 | 18 字节 / 14 ms ⇒ 实测 **71.5 帧/s**。⚠️ STM32 的 WordLength **把校验位算在内**，必须配 9B —— 配 8B 会只剩 7 个数据位（见第六节）|
-| UART8（调试） | 115200 / 8N1 | `usart.c` |
-| TIM6（控制节拍） | PSC=83, ARR=999 | 84M ÷ 84 ÷ 1000 = **1 kHz** |
-| SPI5（IMU） | 656.25 kHz，Mode 0 | 84M ÷ 128 |
-
-### 2.5 中断优先级（数字越小越优先）
-
-| 中断 | 抢占优先级 |
-|---|---|
-| **TIM6**（控制节拍） | **4** |
-| USART1 / UART8 | 5 |
-| CAN1 / CAN2 | 6 |
-
-> 设计意图：**控制循环不能被通讯打断**——1 kHz 被拖慢，云台就会抖。
-
-## 三、软件结构
-
-### 3.1 分层（`USER/` 下四层，依赖单向）
-
-| 层 | 只负责 | 不该出现 |
-|---|---|---|
-| `application` | 决策：底盘往哪走、摇杆怎么映射 | 不该直接发 CAN 帧 |
-| `controller` | 纯算法（PID） | 不该知道 CAN / 串口 |
-| `device` | 认协议：「0x205 是云台 YAW」 | 不该算 PID |
-| `bsp` | 搬字节：「发一帧 / 收一帧」 | 不该知道 0x205 是什么 |
-
-调用方向：`application → controller → device → bsp → HAL`，**下层绝不许调上层**。
-
-### 3.2 全工程只有 5 个入口点
-
-| 入口 | 在哪 | 干什么 |
-|---|---|---|
-| `main()` | `Core/Src/main.c` | 初始化 + 主循环（约 4.5 kHz，只做 `bsp_imu_update()`） |
-| `HAL_TIM_PeriodElapsedCallback` | `main.c` | **TIM6 @1 kHz**：`remote_update()` + `chassis_run()` + `gimbal_run()` |
-| `HAL_CAN_RxFifo0MsgPendingCallback` | `bsp_can.c` | 收帧 → 按 ID 分派给已注册的回调 |
-| `HAL_UARTEx_RxEventCallback` | `remote.c` | 遥控收完一帧（靠帧间空闲分帧）→ 解包 |
-| `HAL_UART_ErrorCallback` | `remote.c` | 串口出错 → **必须重新挂接收**（不写会永久停摆） |
-
-### 3.3 云台 YAW 的数据流（当前版本）
-
-```text
-MPU6500 --SPI5--> bsp_imu_update()   (主循环 约 4.5 kHz)
-  1) 一次突发读 14 字节: accel(6) + temp(2) + gyro(6)
-  2) 加计慢速低通 + 归一化 -> 重力方向单位向量 g_hat
-  3) 投影: yaw_now = g_hat · omega_body      (rad/s)
-  4) 减零偏 -> g_imu_gyro_yaw                  <== 真 yaw 角速度
-
-gimbal_run()  (TIM6 1 kHz)
-  |- gimbal_angle_track()      编码器连续角（只诊断，未进控制）
-  |- gimbal_imu_angle_update() 陀螺积分 + 一阶低通 -> s_yaw_imu_lpf
-  `- gimbal_yaw_control()      位控
-        tgt += 摇杆 x 0.0038          // 位置积分
-        err  = wrap_pi(tgt - s_yaw_imu_lpf)   // 折回 ±pi（保命）
-        w_ref = KP_ANG x err
-        out  = KP_W x (w_ref - g_imu_gyro_yaw)
-        `- gimbal_send_yaw() -> 0x1FF 槽位0 @ CAN1 -> GM6020
+```mermaid
+flowchart TD
+    A[主循环] --> B[bsp_imu_update]
+    B --> C[有效角速度与校零状态]
+    D[TIM6 设计节拍1 kHz] --> E[remote_update]
+    E --> F[chassis_run]
+    F --> G[gimbal_run]
+    C --> G
+    F --> H[motor发送接口]
+    G --> H
+    H --> I[bsp_can发送]
+    J[CAN接收回调] --> K[motor反馈更新]
+    K --> F
+    K --> G
+    L[USART1接收回调] --> M[remote解包]
+    M --> E
 ```
 
-### 3.4 两条设计要点
+`remote_update → chassis_run → gimbal_run` 的顺序有业务意义：本拍的推杆先让底盘退出驻车，云台随后消费更新后的状态。
 
-- **回调注册，不硬编码**：`bsp_can.c` 不知道「谁是云台」，是 `gimbal_init()` 主动注册 ⇒ 加设备时 bsp 层一行不改
-- **掉线就断电**：遥控掉线 / IMU 掉线 / 基准刚换 → 一律输出 0（电机松掉），不是保持上一个值
-
-## 四、工具链（2026-10-13 起：CMake + Ninja + GCC + OpenOCD + VS Code）
-
-| 环节 | 用什么 |
-|---|---|
-| 构建 | CMake + **Ninja**，预设 `Debug` / `Release` |
-| 编译器 | `arm-none-eabi-gcc 13.3`（ST CubeIDE 自带那一份） |
-| 烧录 / 调试 | OpenOCD 2.4.200 + DAPLink（CMSIS-DAP / SWD）；VS Code 扩展 **cortex-debug** |
-| 路径 | 全部写死在 `.vscode/settings.json`，不依赖 PATH |
-
-**命令行**（在工程根目录）：
+当前抢占优先级为 TIM6=4、USART1/UART8=5、CAN RX=6。CAN 不能在 TIM6 回调中抢占，但 TIM6 可以打断尚未写完反馈的接收处理；多字段反馈仍不是严格的原子快照。1 kHz 是设计节拍，不是本次重新测得的最坏执行时间保证。
 
 ```text
-cmake --preset Debug                 # 配置
-cmake --build --preset Debug         # 编译
-cmake --build --preset Release       # 编译（-Os，体积小得多）
+Core/                         CubeMX入口、外设与中断
+USER/
+  application/
+    input.c/.h                通道映射、死区、归一化
+    chassis/chassis.c/.h      驾驶、跟随、自转分配、驻车与轮速闭环
+    gimbal/gimbal.c/.h        启动回正、正常YAW、驻车保持、PITCH控制
+  controller/pid.c/.h         PID计算
+  device/
+    motor/                    电机实例、反馈解析、组帧发送
+    imu/                      MPU6500读取、三轴校零与投影
+    remote/                   DBUS接收与在线判定
+    buzzer/                   蜂鸣器
+  bsp/
+    can/                      CAN注册、接收分派与发送
+    uart/                     调试串口
 ```
 
-**VS Code 入口**：
+应用层调用控制算法和设备接口；电机协议由设备层处理，CAN 收发由 BSP 完成。当前采用同文件 `static` 函数划分职责，没有额外引入公共保护框架。
 
-| 动作 | 怎么做 |
-|---|---|
-| 编译 | `Ctrl+Shift+B`（默认 build 任务），或状态栏 CMake 的扳手图标 |
-| 烧录 | 任务 `烧录 NEW-INFANTRY-A (Debug)`（OpenOCD `program ... verify reset exit`） |
-| 调试 | `F5` → 选 `调试 NEW-INFANTRY-A (DAPLink + OpenOCD)`（会先自动编译） |
+### 云台控制入口
 
-> ⚠️ 别用 CMake Tools 状态栏那两个运行/调试图标——那是给**桌面 CMake 工程**用的，会去调 `make`，我们没有 Makefile。
+```text
+gimbal_run
+  → gimbal_read_feedback       读取本拍原有反馈局部量
+  → gimbal_update_measurement  编码器累计、IMU积分与角度低通
+  → gimbal_check_permission    分别累计YAW/PITCH禁止原因
+  → gimbal_yaw_run             回正/正常/驻车控制与异常处理、发送
+  → gimbal_pitch_run           PITCH控制、复位与发送
+```
 
-**实测体积**（2026-10-13）：
+自动回正：`编码器最短角差 → 回正角度P → 目标角速度 → IMU速度P → 命令限幅`。
 
-| 预设 | FLASH | RAM |
+正常位控：`摇杆积分目标角 → IMU角差外环 + 速度前馈 → IMU速度内环 → 输出`。
+
+IMU 测量先逐轴扣除偏置，再沿估计重力方向投影。积分角会受残余零偏影响，并非无漂移的绝对航向；驻车主要隔离这种漂移对停车的影响。
+
+## 四、参数与观察入口
+
+| 配置入口 | 常用默认值 | 单位/意义 |
 |---|---|---|
-| Debug（-O0 -g3） | **34784 B** | 3408 B |
-| Release（-Os） | **20552 B** | 3400 B |
+| `chassis_cfg.yaw_zero_ecd / yaw_ecd_dir` | `5500 / +1` | 本车零位与方向标定 |
+| `chassis_cfg.max_rpm` | `5000` | 平移输入尺度及单轮目标上限，电机转子rpm |
+| `chassis_cfg.spin_fixed_rpm` | `2000` | 四轮分配中的旋转分量，不是车身转速 |
+| `chassis_cfg.follow_kp / follow_max_rpm` | `3000 / 2000` | 跟随增益与上限，死区3° |
+| `chassis_cfg.kp / ki / kd` | `15 / 0 / 0` | 四轮轮速环 |
+| `chassis_cfg.park` | `3000ms / 10rpm / 200ms / 3000ms` | 闲置时间、停稳阈值、稳定时间、制动超时 |
+| `gimbal_cfg.yaw.kp_w / kp_ang` | `5000 / 5` | 正常速度P / 角度P |
+| `gimbal_cfg.yaw.tgt_rate / speed_max` | `0.0038 / 4` | rad/tick / rad/s；当前两者并非同一速度尺度 |
+| `gimbal_cfg.yaw.out_lim` | `20000` | YAW正常命令上限 |
+| `gimbal_cfg.yaw.home` | `2.5rad/s / 8000 / 8000ms` | 回正速度上限、命令上限、超时 |
+| `gimbal_cfg.yaw.park` | `kp=5 / 0.5rad/s / 3000` | 驻车位置增益、速度/命令上限 |
+| `gimbal_cfg.pitch` | `level=6000 / dir=-1` | 水平基准及输出方向 |
 
-> Keil 工程（`MDK-ARM/`）仍保留可用，但已不是主路径。
+- `cfg` 保存配置，`state` 保存运行状态；旧笔记中的独立变量名需对照当前 `.h` 文件。
+- 底盘观察：`chassis_state.mode`、`yaw_rel_rad`、`park_state`、`park_fault`、`pid_tar[]`、`pid_fb[]`、`translation_scale`、`wz_applied`，均为 `chassis_state` 成员。
+- 云台观察：`gimbal_state.home_state`、`home_fault`、`home_manual_ready`、`yaw_inhibit`、`pitch_inhibit`、`yaw_park_active`，均为 `gimbal_state` 成员；控制量另看 `yaw_tgt`、`yaw_err`、`yaw_omega_ref`、`yaw_out`。
+- IMU看 `imu_online`、`imu_cal_source`、三轴偏置与原始gyro/acc。`imu_cal_source=1`使用本次三轴结果，`2`使用历史标量兜底；流程完成不保证本次三轴结果被采用。
+- 同步记录 `remote.ch0～ch3`、拨杆、在线状态和时间，才能把响应与操作对应起来。
 
-## 五、当前进度与已知问题
+编码器一圈8192格；云台角度/速度主要使用rad、rad/s。发送命令不是安培；底盘旋转分量也不能直接当作车身rad/s。
 
-| 阶段 | 内容 | 状态 |
+## 五、构建与调试
+
+主工具链为 CMake、Ninja、GNU Arm Embedded、OpenOCD 和 VS Code Cortex-Debug。命令行需能找到 `cmake`、`ninja`、`arm-none-eabi-gcc` 等程序；编辑器任务中的路径是本机配置，换电脑需核对。
+
+在工程根目录执行：
+
+```powershell
+cmake --preset Debug
+cmake --build --preset Debug
+
+cmake --preset Release
+cmake --build --preset Release
+```
+
+产物分别为 `build/Debug/firmware.elf`、`build/Release/firmware.elf`。预设见 [CMakePresets.json](CMakePresets.json)，芯片参数和链接脚本由预设传给工具链。
+
+[CMakeLists.txt](CMakeLists.txt) 自动收集 `USER` 下的 `.c`，并加入含源文件目录的头文件路径；新增或移动文件后仍应核对实际编译清单。
+
+VS Code 当前入口见 [.vscode/tasks.json](.vscode/tasks.json) 和 [.vscode/launch.json](.vscode/launch.json)：
+
+- 构建任务：`构建`、`构建 (Release)`。
+- 烧录任务：`烧录 (Debug)`，带构建/烧录前自检依赖。
+- 调试配置：`调试 Debug (DAPLink + OpenOCD)`、`调试 Release (DAPLink + OpenOCD)`。
+
+编译通过只表示该次源码编译链接完成；烧录需以实际program/verify/reset结果为准。板上版本一致性、机械行为和控制耗时应分别验证。
+
+`MDK-ARM/` 是保留的历史工程，清单存在旧目录引用；当前主路径为 CMake/GNU Arm，近期验证不代表 Keil 已通过。
+
+## 六、验证记录与已知边界
+
+### 最近一次结构整理：2026-10-29，基线至9e40f48
+
+- 应用307个场景完成：290通过，17个已有失败保持不变，478442次断言。不能表述为307项全部通过。
+- 逐步对照重构前后的用例输出和发送序列状态摘要，没有新增差异；异常参数场景只表征现状，不证明其行为合理。
+- IMU离线测试150/150，覆盖默认、YAW反号、诊断Z反号三种配置。
+- Debug/Release完整编译链接，最终构建日志中无编译警告/错误。上述验证对应当时源码快照，不自动覆盖后续本地编辑。
+- 此轮没有烧录，没有测量实际中断耗时或补做机械系统验收。
+
+### 后续需要单独处理
+
+1. **非法限幅参数**：`home/park.out_lim`、`w_ref_lim`等基本前提未完整校验。离线已复现负限幅制造非零命令；默认值为正，不代表可任意写入Watch值。校验应集中在现有配置检查函数。
+2. **测量发布一致性**：反馈多字段可能在发布中途被控制中断读取，IMU有效数据年龄与发布约定仍可完善。
+3. **诊断与注释**：回正CONFIG故障不一定映射到inhibit的CONFIG位；部分旧注释与当前表达式不一致，阅读时以实际调用和单位为准。
+4. **专项实车验收**：完整回正时间线、驻车进入/退出与不同负载工况仍需留有对应数据。
+5. **手感与目标尺度**：当前目标积分速率为3.8rad/s，前馈尺度4rad/s；跟随死区边缘和加速度约束可根据实测症状单独优化。
+6. **故障策略**：普通驾驶单轮超时只停该轮，驻车阶段则检查四轮并可能整车停输出；二者不是同一恢复流程。
+
+旧README中的10月14日温漂、静摩擦阈值、固定频率和体积数据属于历史调试条件，不再作为当前版本性能结论。
+
+## 七、推荐阅读路线
+
+按“一次推杆如何变成电机动作”阅读：
+
+| 顺序 | 入口 | 应弄清的问题 |
 |---|---|---|
-| 0 | 地基：蜂鸣器 / CAN 收发 / 遥控解包 | ✅ |
-| 1 | 底盘：四轮转速闭环 + 拨杆自转 | ✅（保护欠债） |
-| 2 | 云台：双 CAN 分派 → IMU 投影法 → YAW 位置环 → PITCH 角度环 | ⚠️ **进行中** |
-| 3 | 发射：摩擦轮 + 拨盘 | ⬜ 未开始 |
+| 1 | [main.c](Core/Src/main.c) | 初始化、主循环、TIM6分别负责什么 |
+| 2 | [motor.h](USER/device/motor/motor.h)、[motor.c](USER/device/motor/motor.c) | 配置、实例、反馈、命令如何组织 |
+| 3 | [remote.c](USER/device/remote/remote.c)、[input.c](USER/application/input.c) | 一次推杆如何从字节变成归一化意图 |
+| 4 | [pid.c](USER/controller/pid.c) | 目标、反馈、误差、输出和限幅如何关联 |
+| 5 | [chassis.c](USER/application/chassis/chassis.c) | 许可与驻车→坐标转换→转向选择→四轮分配→轮速PID |
+| 6 | [gimbal.c](USER/application/gimbal/gimbal.c) | 回正、正常控制、驻车分别使用什么反馈，如何接管 |
+| 7 | [bsp_imu.c](USER/device/imu/bsp_imu.c) | 标度、三轴偏置、重力投影与在线状态如何产生 |
+| 8 | [bsp_can.c](USER/bsp/can/bsp_can.c) | 接收注册、分派和发送怎样闭合链路 |
 
-### 5.1 YAW 的实测结论（2026-10-14 用 EmberProbe 在线测得）
+每次围绕一个函数确认：用途、调用者、输入输出、单位、执行顺序、状态变化和恢复条件。
 
-| 结论 | 数据 |
-|---|---|
-| **漂移速率 = 存储值 − 真实零偏**（1:1）| 三步实测 1.233 → 0.601 → 0 °/s |
-| **真值本身随温度移动（零漂的最终根源）** | 冷机 **−0.0624** / 热机 **−0.065~−0.066** ⇒ 差 **0.23 °/s** ⇒ 单个固定值只能管一个温度 |
-| **可靠观测量 = δ** | δ = d(积分角)/dt − d(编码器角)/dt。⚠️ 不能用「云台转多快」：同一 bias 下实测 −0.27 / −1.05 / −1.73 / −2.24 计数/s，**差 8 倍**（静摩擦压着）|
-| 开机 1 秒标定**不可信** | 历史三次 +0.0279 / −0.0468 / −0.0482 rad/s，与真值差 **0.014~0.09 rad/s** ⇒ 保留预置值更稳 |
-| 环路**看不见**真实漂移 | 云台实转 1.233 °/s 时陀螺均值只有 0.036 °/s。环路平衡时它本来就该为 0 ⇒ 别拿这个当「IMU 坏了」 |
+## 八、协作与资料约定
 
-### 5.2 已知问题（按危险度排序）
-
-| # | 问题 | 现状 |
-|---|---|---|
-| 1 | **静摩擦死区** | 阈值实测 **696（10-13）/ 716（10-14）**；`err` 得攒到 **2~3.5°** 才动（= 阈值 ÷ (KP_W×KP_ANG)，三次实测全符合）⇒ `KICK`（=0）未标定 |
-| 2 | **零偏温漂** | 真实零偏随温度从 −0.0624（冷）移到 −0.0655（热），差 **0.23 °/s** ⇒ 固定值治不了 ⇒ 需温控（ARBATOS：TIM3_CH2/PB5 加热到 40 °C，稳 2 s 后再标定）|
-| 3 | YAW 缺软限位 / 角度基准 | 有滑环，无断线风险，但会一直转 |
-| 4 | 无失速 / 过温保护 | 基本空白，上赛道前必须做 |
-| 5 | 采样能力有限 | EmberProbe 实测约 10 Hz，看不见 10~100 Hz 的抖动 |
-| 6 | 参数不可在线调 | `KP_W` / `KICK` / `SPEED_MAX` 是 `#define`；只有 `KP_ANG`（结构体字段）能在线改 |
-| 7 | **在线写 RAM 不可靠** | OpenOCD 连接会**拉复位 + halt 目标**（2026-10-14 一天丢 3 次写入）⇒ 修正值必须进代码、烧进去 |
-
-## 六、踩坑清单（现象 → 根因）
-
-| 现象 | 根因 |
-|---|---|
-| 遥控永远收不到 | 没写 `HAL_UART_ErrorCallback`：一次 ORE 溢出就永久停摆 |
-| 云台自转、越转越快 | 用单轴陀螺当 yaw 反馈（只拿到 32.9% 真角速度）⇒ 改用**投影法** |
-| 误差一路涨上去 | 纯陀螺积分角**没折回 ±π** |
-| 云台被顶到极限、力气很大 | PID 方向反了（正反馈）；判据：正输出必须让反馈量增大 |
-| 上电瞬间暴冲 | 没收到过反馈帧就把 `angle=0` 当基准 |
-| 云台「抖」但查不出原因 | 反馈里带 1.2 °/s 的零偏误 + 静摩擦死区 |
-| 改完代码没反应 | 只编译没烧录 |
-| 判断反馈源看错 | 只认 `PID_calc` 的实参 / 赋值语句；命名与注释**不作依据** |
-| 终端改的文件「自己变回去」 | 编辑器里的旧缓冲区被保存覆盖 ⇒ 改完先 `Revert File` |
-| `read_file` 读到旧内容 | 工具返回缓存；验文件一律用终端 `IO.File::ReadAllLines` |
-| 遥控所有通道都到不了满量程 | USART1 配成 8B+偶校验，而 STM32 的 WordLength **把校验位算在内** ⇒ 实际只剩 7 个数据位，每字节最高位被吞：ch0 −128、ch1 −16、**ch2 −512**（满杆只余 148）、ch3 −64 ⇒ 必须配 **9B + 偶校验** |
-| `sw1` 位序怎么调都不对 | 同一个根因：`sw1` 取 `buff[5]` 的 bit6~7，恰好是被吞掉的那一位 ⇒ 修好 USART1 后立刻变成期望的 1/3/2 |
-| 在线写进 RAM 的值「自己消失」 | OpenOCD 连接会**拉复位 + halt 目标**（2026-10-14 一天丢 3 次写入）⇒ 在线改的值只在本轮上电内有效，修正必须进代码 |
-| 读回来全是 0 | 目标被 halt 或已断电，**不是探针坏**；判据：`g_imu_whoami` / `g_gimbal_tx_ok` / `g_rc_frames` 同时为 0 且上电计数归零 |
-| 采样日志整列全是 0 | 读取脚本失败时会静默写 0 ⇒ 用数据前先确认读取没报错（`txok` 在跳）|
-| 同一会话里算出「废数」 | PowerShell 变量残留：上一条失败时沿用旧变量继续算 ⇒ 命令自包含、开头显式初始化 |
-| 往 md 里插整行却「没插进去」 | `.Replace()` 拼多行字符串会**静默失配**（2026-10-14 实测丢 2 行）⇒ 插行改用「读成行数组 → `+@(新行)` → 写回」，并立刻核对行数 |
-
-## 七、资料索引
-
-| 内容 | 路径 |
-|---|---|
-| **协作规范（必读）** | 工程根目录 `AGENTS.md` |
-| 交接文档（最新）| `MdByVsCode/20261013-档案-NEW-INFANTRY-A项目总交接-v2.md`、`20261014-档案-云台代码导读交接.md`、`20261014-方案-步兵固件完整框架与推进路线.md`、`20261013-分析-代码审核与后续路线.md` |
-| 实测数据（EmberProbe 导出的 CSV）| `Desktop/MarkDown/data/`（如 `gimbal_log3_20261014.csv`，含 `txok` 列可判断是否复位）|
-| 参考工程 ARBATOS（同款 A 板） | `Robomaster资料合集/ARBATOS-main` |
-| 官方手册（板卡 / 电机 / 遥控） | `Desktop/手册/` |
-| 中科大电控讲义 | `Robomaster资料合集/中科大RMPPT` |
-
-> 查资料优先级：**芯片/板卡官方手册 > 官方例程 > 同硬件完整工程（ARBATOS）> 中文讲义 > 网上博客**
-
-## 八、仓库约定
-
-- 提交消息：一句话总结，正文写清「改了什么 / 为什么 / 踩了什么坑」
-- 不提交：编译产物、日志、`build/`、`MDK-ARM/NEW-INFANTRY-A/`、`.agents/skills/_emberprobe/agent-bridge.json`（机器相关指针，已在 `.gitignore`）
-- 笔记统一放 `Desktop/MarkDown/MdByVsCode/`，命名 `YYYYMMDD-类别-主题.md`
-- 注释只写「为什么」，不写「这行在干什么」
-
+- 协作规范见 [AGENTS.md](AGENTS.md)。修改前明确范围，控制调整与结构整理分步进行。
+- 保留现有风格：配置表、实例反馈、统一发送，以及应用层明确的run入口。优先用职责清楚的同文件短函数组织细节。
+- 不提交构建产物、采样日志和机器相关桥接文件，规则见 [.gitignore](.gitignore)。
+- 维护者本机的新文档、备份、测试副本、构建和日志统一保存到 `C:\Users\fan\Desktop\MarkDown\MdByCodex`；它们不随克隆仓库自动获得。
+- 最近资料：`20261029-控制代码可读性重构/完成交付.md`、`20261029-分析-DeepSeek云台审阅逐项复核.md`，均位于上述本机目录，包含原始命令、时间戳、结果与源码哈希。
+- 本地参考包括ARBATOS、中科大RMPPT和湖南大学框架；采用其思路前需核对硬件、单位、调用链及实际需求。
