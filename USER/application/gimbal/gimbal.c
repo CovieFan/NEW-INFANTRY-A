@@ -549,84 +549,123 @@ static float gimbal_pitch_control(const gimbal_pitch_cfg_t *cfg)
     return pitch_pid_out;
 }
 
-void gimbal_run(void)
+/* 当拍原有局部量；不提供跨中断的同帧快照保证。 */
+typedef struct
 {
-    const gimbal_cfg_t cfg = gimbal_cfg;
-    int16_t raw = motor_gimbal[GIMBAL_AXIS_YAW].fb.angle;
-    uint32_t last_ms = motor_gimbal[GIMBAL_AXIS_YAW].fb.last_ms;
-    int16_t pitch_raw = motor_gimbal[GIMBAL_AXIS_PITCH].fb.angle;
-    uint32_t pitch_last_ms = motor_gimbal[GIMBAL_AXIS_PITCH].fb.last_ms;
-    uint32_t now = HAL_GetTick();
-    uint32_t yaw_age = (last_ms != 0U) ? (now - last_ms) : UINT32_MAX;
-    uint32_t pitch_age = (pitch_last_ms != 0U) ? (now - pitch_last_ms) : UINT32_MAX;
-    uint8_t enabled = cfg.enable;
-    uint8_t yaw_inhibit = 0U;
-    uint8_t pitch_inhibit = 0U;
-    float out;
+    int16_t raw, pitch_raw;
+    uint32_t last_ms, pitch_last_ms, now;
+    uint32_t yaw_age, pitch_age;
+    uint8_t yaw_inhibit, pitch_inhibit;
+} gimbal_cycle_t;
 
+static void gimbal_read_feedback(gimbal_cycle_t *cycle)
+{
+    cycle->raw = motor_gimbal[GIMBAL_AXIS_YAW].fb.angle;
+    cycle->last_ms = motor_gimbal[GIMBAL_AXIS_YAW].fb.last_ms;
+    cycle->pitch_raw = motor_gimbal[GIMBAL_AXIS_PITCH].fb.angle;
+    cycle->pitch_last_ms = motor_gimbal[GIMBAL_AXIS_PITCH].fb.last_ms;
+    cycle->now = HAL_GetTick();
+    cycle->yaw_age = (cycle->last_ms != 0U) ? (cycle->now - cycle->last_ms) : UINT32_MAX;
+    cycle->pitch_age = (cycle->pitch_last_ms != 0U) ? (cycle->now - cycle->pitch_last_ms) : UINT32_MAX;
+    cycle->yaw_inhibit = 0U;
+    cycle->pitch_inhibit = 0U;
+}
+
+static void gimbal_update_measurement(gimbal_cycle_t *cycle)
+{
     gimbal_angle_track();              
     yaw_angle_deg = (float)yaw_angle_acc * (360.0f / 8192.0f);   //算一下YAW电机相对底盘转了多少度
 
-    if (gimbal_imu_angle_update() == 0U) { yaw_inhibit |= GIMBAL_INHIBIT_NONFINITE; }
+    if (gimbal_imu_angle_update() == 0U) { cycle->yaw_inhibit |= GIMBAL_INHIBIT_NONFINITE; }
     yaw_imu_deg   = yaw_imu_lpf * 57.29578f; //IMU输出的是角速度，角速度积分得到的角度是弧度制，因此这里需要手动转化为角度                    
 
-    if (enabled == 0U) { yaw_inhibit |= GIMBAL_INHIBIT_DISABLED; pitch_inhibit |= GIMBAL_INHIBIT_DISABLED; }
-    if (enabled > 1U) { yaw_inhibit |= GIMBAL_INHIBIT_CONFIG; pitch_inhibit |= GIMBAL_INHIBIT_CONFIG; }
-    if (gimbal_yaw_config_valid(&cfg.yaw) == 0U) { yaw_inhibit |= GIMBAL_INHIBIT_CONFIG; }
-    if (gimbal_pitch_config_valid(&cfg.pitch) == 0U) { pitch_inhibit |= GIMBAL_INHIBIT_CONFIG; }
+}
+
+/* 只累积许可原因；PID复位和发送分别由两轴执行步骤负责。 */
+static void gimbal_check_permission(const gimbal_cfg_t *cfg, gimbal_cycle_t *cycle)
+{
+    if (cfg->enable == 0U) { cycle->yaw_inhibit |= GIMBAL_INHIBIT_DISABLED; cycle->pitch_inhibit |= GIMBAL_INHIBIT_DISABLED; }
+    if (cfg->enable > 1U) { cycle->yaw_inhibit |= GIMBAL_INHIBIT_CONFIG; cycle->pitch_inhibit |= GIMBAL_INHIBIT_CONFIG; }
+    if (gimbal_yaw_config_valid(&cfg->yaw) == 0U) { cycle->yaw_inhibit |= GIMBAL_INHIBIT_CONFIG; }
+    if (gimbal_pitch_config_valid(&cfg->pitch) == 0U) { cycle->pitch_inhibit |= GIMBAL_INHIBIT_CONFIG; }
     if ((gimbal_state.home_state < GIMBAL_YAW_HOME_WAIT) || (gimbal_state.home_state > GIMBAL_YAW_HOME_FAULT) ||
         (gimbal_state.home_fault < GIMBAL_YAW_HOME_FAULT_NONE) || (gimbal_state.home_fault > GIMBAL_YAW_HOME_FAULT_TIMEOUT))
     {
-        yaw_inhibit |= GIMBAL_INHIBIT_CONFIG;
+        cycle->yaw_inhibit |= GIMBAL_INHIBIT_CONFIG;
     }
-    if (remote.online == 0U) { yaw_inhibit |= GIMBAL_INHIBIT_REMOTE; pitch_inhibit |= GIMBAL_INHIBIT_REMOTE; }
-    if (imu_online == 0U) { yaw_inhibit |= GIMBAL_INHIBIT_IMU; }
-    if ((raw < 0) || (raw >= GIMBAL_ENC_RANGE) || (last_ms == 0U) || (yaw_age > GIMBAL_ANGLE_GAP))
+    if (remote.online == 0U) { cycle->yaw_inhibit |= GIMBAL_INHIBIT_REMOTE; cycle->pitch_inhibit |= GIMBAL_INHIBIT_REMOTE; }
+    if (imu_online == 0U) { cycle->yaw_inhibit |= GIMBAL_INHIBIT_IMU; }
+    if ((cycle->raw < 0) || (cycle->raw >= GIMBAL_ENC_RANGE) || (cycle->last_ms == 0U) || (cycle->yaw_age > GIMBAL_ANGLE_GAP))
     {
-        yaw_inhibit |= GIMBAL_INHIBIT_FEEDBACK;
+        cycle->yaw_inhibit |= GIMBAL_INHIBIT_FEEDBACK;
     }
     if (!isfinite(imu_gyro_yaw) ||
         !gimbal_range_valid(yaw_tgt, -GIMBAL_ANGLE_STATE_MAX, GIMBAL_ANGLE_STATE_MAX) ||
-        (gimbal_pid_state_valid(&pid_yaw) == 0U)) { yaw_inhibit |= GIMBAL_INHIBIT_NONFINITE; }
-    if (gimbal_pid_state_valid(&pid_pitch) == 0U) { pitch_inhibit |= GIMBAL_INHIBIT_NONFINITE; }
+        (gimbal_pid_state_valid(&pid_yaw) == 0U)) { cycle->yaw_inhibit |= GIMBAL_INHIBIT_NONFINITE; }
+    if (gimbal_pid_state_valid(&pid_pitch) == 0U) { cycle->pitch_inhibit |= GIMBAL_INHIBIT_NONFINITE; }
     /* PITCH等IMU启动流程结束；初始化失败也可结束等待，不依赖YAW测量许可。 */
-    if (imu_startup_done == 0U) { pitch_inhibit |= GIMBAL_INHIBIT_IMU; }
-    if ((pitch_raw < 0) || (pitch_raw >= GIMBAL_PITCH_ENC_RANGE) ||
-        (pitch_last_ms == 0U) || (pitch_age > 100U))
+    if (imu_startup_done == 0U) { cycle->pitch_inhibit |= GIMBAL_INHIBIT_IMU; }
+    if ((cycle->pitch_raw < 0) || (cycle->pitch_raw >= GIMBAL_PITCH_ENC_RANGE) ||
+        (cycle->pitch_last_ms == 0U) || (cycle->pitch_age > 100U))
     {
-        pitch_inhibit |= GIMBAL_INHIBIT_FEEDBACK;
+        cycle->pitch_inhibit |= GIMBAL_INHIBIT_FEEDBACK;
     }
-    gimbal_state.yaw_age_ms = yaw_age;
-    gimbal_state.pitch_age_ms = pitch_age;
-    out = gimbal_yaw_startup_control(&cfg.yaw, raw, now, (uint8_t)(yaw_inhibit == 0U));
+    gimbal_state.yaw_age_ms = cycle->yaw_age;
+    gimbal_state.pitch_age_ms = cycle->pitch_age;
+}
+
+static void gimbal_yaw_run(const gimbal_yaw_cfg_t *cfg, gimbal_cycle_t *cycle)
+{
+    float out;
+    out = gimbal_yaw_startup_control(cfg, cycle->raw, cycle->now, (uint8_t)(cycle->yaw_inhibit == 0U));
     if (!isfinite(out))
     {
-        yaw_inhibit |= GIMBAL_INHIBIT_NONFINITE;
+        cycle->yaw_inhibit |= GIMBAL_INHIBIT_NONFINITE;
         gimbal_yaw_reset();
         out = 0.0f;
     }
-    gimbal_state.yaw_inhibit = yaw_inhibit;
+    gimbal_state.yaw_inhibit = cycle->yaw_inhibit;
     motor_gimbal_send_yaw((int16_t)out);     
 
-    if (pitch_inhibit == 0U)
+}
+
+static void gimbal_pitch_reset(void)
+{
+    pitch_ready = 0U;
+    pid_reset(&pid_pitch);
+    pitch_pid_out = 0.0f;
+}
+
+static void gimbal_pitch_run(const gimbal_pitch_cfg_t *cfg, gimbal_cycle_t *cycle)
+{
+    float out;
+    if (cycle->pitch_inhibit == 0U)
     {
-        out = gimbal_pitch_control(&cfg.pitch);
+        out = gimbal_pitch_control(cfg);
         if (!isfinite(out))
         {
-            pitch_inhibit |= GIMBAL_INHIBIT_NONFINITE;
-            pitch_ready = 0U;
-            pid_reset(&pid_pitch);
-            pitch_pid_out = 0.0f;
+            cycle->pitch_inhibit |= GIMBAL_INHIBIT_NONFINITE;
+            gimbal_pitch_reset();
             out = 0.0f;
         }
     }
     else
     {
-        pitch_ready = 0U;
-        pid_reset(&pid_pitch);
-        pitch_pid_out = 0.0f;
+        gimbal_pitch_reset();
         out = 0.0f;
     }
-    gimbal_state.pitch_inhibit = pitch_inhibit;
+    gimbal_state.pitch_inhibit = cycle->pitch_inhibit;
     motor_gimbal_send_pitch((int16_t)out);//同上
+}
+
+void gimbal_run(void)
+{
+    const gimbal_cfg_t cfg = gimbal_cfg;
+    gimbal_cycle_t cycle;
+
+    gimbal_read_feedback(&cycle);
+    gimbal_update_measurement(&cycle);
+    gimbal_check_permission(&cfg, &cycle);
+    gimbal_yaw_run(&cfg.yaw, &cycle);
+    gimbal_pitch_run(&cfg.pitch, &cycle);
 }
