@@ -23,3 +23,7 @@ MDK-ARM/NEW-INFANTRY-A/
 # CMake 构建产物（新增 2026-10-13）
 build/
 .agents/skills/_emberprobe/agent-bridge.json
+
+# Local assistant instructions
+[Aa][Gg][Ee][Nn][Tt].[Mm][Dd]
+[Aa][Gg][Ee][Nn][Tt][Ss].[Mm][Dd]
